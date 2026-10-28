@@ -31,6 +31,82 @@ What Phase 1 provides:
 All scores are supplied manually (e.g. in a script or test) rather than
 fetched from a marketplace.
 
+## Phase 2 scope
+
+Phase 2 adds a manual input path on top of the Phase 1 scoring engine: a
+terminal CLI that asks the user for a product's data and scores, then
+prints a full opportunity report. It still does **not** include any
+marketplace scraping, API integrations, agents, a database, or automation
+— it reuses the existing `Product`, `ComponentScores`, and
+`score_opportunity()` from Phase 1 without duplicating any scoring logic.
+
+What Phase 2 provides:
+
+- `src/main.py` — the Manual Product Analyzer CLI (presentation layer
+  only): prompts for product name, category, and the seven component
+  scores; validates and re-asks on invalid input; builds and prints the
+  final report.
+- `tests/test_main.py` — unit tests for the CLI's reusable
+  parsing/validation/formatting functions, using an injectable
+  `input_func` instead of mocking the real `input()`.
+
+### Run the analyzer
+
+```bash
+python -m src.main
+```
+
+### Example
+
+```
+RAVZ Product Hunter -- Manual Product Analyzer
+Enter the product details and scores below.
+
+Product name: Wireless Mouse
+Category: Electronics
+Demand score (0-100): 85
+Trend score (0-100): 70
+Competition score (0-100): 40
+Margin score (0-100): 60
+Supplier score (0-100): 55
+Logistics score (0-100): 90
+Risk score (0-100): 15
+
+==================================================
+OPPORTUNITY REPORT
+==================================================
+Product: Wireless Mouse
+Category: Electronics
+
+Component scores:
+  Demand:      85.0
+  Trend:       70.0
+  Competition: 40.0
+  Margin:      60.0
+  Supplier:    55.0
+  Logistics:   90.0
+  Risk:        15.0
+
+Weighted breakdown:
+  Demand       contributes 25.5
+  Trend        contributes 14.0
+  Competition  contributes 9.0
+  Margin       contributes 9.0
+  Supplier     contributes 5.5
+  Logistics    contributes 4.5
+  Risk         contributes 4.25
+
+Opportunity Score: 71.75
+Classification: Worth deeper investigation
+
+Recommendation: Investigate further before committing.
+==================================================
+```
+
+If you type an invalid score (non-numeric, or outside 0-100), the CLI
+prints `Invalid input: ...` and asks the same question again instead of
+crashing.
+
 ## Architecture direction
 
 The system is designed to grow into an orchestrator coordinating
@@ -98,8 +174,8 @@ root, so `src` resolves as a package whether you run `pytest` or
 
 1. Project structure
 2. Data models
-3. Opportunity scoring engine *(current phase)*
-4. Manual product input
+3. Opportunity scoring engine
+4. Manual product input *(current phase)*
 5. First real data integration
 6. Demand analysis
 7. Competition analysis

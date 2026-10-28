@@ -288,3 +288,220 @@ Mercado Livre."
 - Projeto, desde o commit zero, já pensa em segurança (`.gitignore`,
   `.env.example`) e em processo (commits pequenos e descritivos) — hábitos
   que valem tanto para um projeto pessoal quanto profissional.
+
+---
+
+## Fase 2 — Manual Product Analyzer CLI
+
+### 1. Nome da fase
+
+**Fase 2: CLI de entrada manual (Manual Product Analyzer) ligada ao
+motor de scoring da Fase 1.**
+
+### 2. Explicação simples
+
+Na Fase 1, a gente construiu a "calculadora" que transforma notas em uma
+nota final — mas só conseguíamos usá-la escrevendo código Python
+diretamente. Agora construímos um "atendente" que fica no terminal e
+**conversa com você**: ele pergunta o nome do produto, a categoria, e
+cada uma das sete notas, uma por vez. Se você digitar algo que não faz
+sentido — por exemplo, escrever "abc" onde deveria ser um número, ou um
+número maior que 100 — o atendente não trava nem quebra: ele educadamente
+avisa "isso não é válido" e pergunta de novo, até você responder certo.
+
+No final, ele entrega um relatório completo no terminal: todas as notas
+que você digitou, o detalhe de quanto cada uma "pesou" na conta, a nota
+final, o veredito (ex.: "vale investigar") e uma recomendação em
+linguagem simples.
+
+É como um garçom que anota seu pedido: ele não cozinha o prato (isso é
+trabalho da cozinha, que já existia desde a Fase 1) — ele só coleta o
+pedido, confere se faz sentido, e leva para a cozinha calcular. O
+"atendente" (CLI) e a "cozinha" (motor de scoring) são peças separadas
+de propósito.
+
+### 3. Explicação técnica
+
+Implementamos um **CLI** (*Command-Line Interface*) em `src/main.py`,
+que atua como **presentation layer** do sistema — camada responsável
+apenas por capturar **user input**, validar, e exibir o resultado, sem
+conter nenhuma lógica de negócio (scoring) própria. Toda a lógica de
+cálculo continua vindo de `src/models.py` e `src/scoring.py`, reutilizada
+sem duplicação (princípio de **separation of concerns**).
+
+A estrutura do módulo segue um fluxo de **control flow** claro:
+
+1. `collect_product()` pergunta nome e categoria (`parse_non_empty_text`
+   valida que não estão vazios).
+2. `collect_scores()` pergunta as sete notas, usando `parse_score` para
+   validar que cada valor é numérico e está entre 0 e 100.
+3. `ask()` é a **reusable function** central: recebe um texto de prompt,
+   uma função de parsing/validação (`parser`) e uma função de entrada
+   injetável (`input_func`, que por padrão é o `input()` real). Ela
+   executa um laço `while True` que só termina quando `parser(raw)` não
+   levanta `ValueError` — ou seja, implementa a regra "pergunte de novo
+   até receber uma resposta válida" sem nunca deixar o programa quebrar
+   com uma exceção não tratada.
+4. `score_opportunity()` (da Fase 1) calcula o resultado.
+5. `format_report()` monta o relatório final como uma string, e `main()`
+   apenas imprime essa string — a montagem do texto é separada da
+   impressão, o que torna `format_report()` testável sem precisar
+   capturar `stdout`.
+
+O truque de **dependency injection** simples em `ask(..., input_func=input)`
+é o que torna todo o módulo testável "sem testar `input()` diretamente":
+nos testes, passamos uma função falsa (`fake_input`) que devolve valores
+pré-definidos de uma lista, simulando um usuário digitando, sem precisar
+de um terminal real nem de bibliotecas de mock mais pesadas.
+
+`src/main.py` é também o **application entry point** do projeto neste
+momento: o arquivo que você executa para "ligar" o programa
+(`python -m src.main`), diferente dos módulos de `src/models.py` e
+`src/scoring.py`, que são bibliotecas internas, não pontos de entrada.
+
+### 4. Conexão entre o simples e o técnico
+
+O "atendente que conversa com você" é, tecnicamente, uma **CLI** fazendo
+**user input** via `input()`. A regra de "perguntar de novo se a
+resposta não fizer sentido" é **input validation** combinada com
+**control flow** (um laço que só sai quando o valor é válido) — na
+prática, a função `ask()`. A separação entre "atendente" e "cozinha" é o
+princípio de **separation of concerns**: o CLI (presentation layer) nunca
+calcula o score sozinho, ele sempre chama `score_opportunity()` da
+camada de negócio. E o fato de testarmos esse "atendente" sem precisar de
+um terminal de verdade é possível porque `ask()`, `collect_product()` e
+`collect_scores()` são **reusable functions** que recebem a fonte de
+entrada como parâmetro, em vez de depender diretamente do `input()` do
+Python.
+
+### 5. O que implementamos na prática
+
+- `src/main.py`:
+  - `parse_score(raw)` — valida que o texto é numérico e está entre 0 e
+    100.
+  - `parse_non_empty_text(raw)` — valida que o texto não está vazio.
+  - `ask(prompt_text, parser, input_func=input)` — laço genérico de
+    pergunta-valida-repete.
+  - `collect_product(input_func=input)` — pergunta nome e categoria.
+  - `collect_scores(input_func=input)` — pergunta as sete notas e monta
+    um `ComponentScores`.
+  - `recommend(classification)` — mapeia a classificação para uma
+    recomendação em linguagem simples.
+  - `format_report(result)` — monta o relatório final como texto.
+  - `main()` — o *entry point*: liga tudo (coleta -> calcula -> imprime).
+- `tests/test_main.py` — 18 novos testes cobrindo: parsing de score
+  válido/inválido (não numérico e fora do range), parsing de texto
+  vazio, retry de `ask()` em múltiplas tentativas inválidas, construção
+  de `Product` e `ComponentScores` a partir de inputs simulados,
+  conteúdo do relatório final, e recomendação para cada classificação
+  (incluindo uma desconhecida).
+- `README.md` atualizado com a seção "Phase 2 scope", o comando de
+  execução (`python -m src.main`) e um exemplo completo de execução.
+- Nenhuma linha de `src/models.py` ou `src/scoring.py` foi alterada —
+  a Fase 2 só consome o que já existia.
+
+### 6. Termos técnicos aprendidos
+
+- **termo:** CLI (Command-Line Interface)
+  **definição:** interface de usuário baseada em texto, onde o usuário
+  digita comandos/respostas no terminal em vez de clicar em botões.
+  **como apareceu no projeto:** `src/main.py`, executado com
+  `python -m src.main`.
+
+- **termo:** User input
+  **definição:** qualquer dado fornecido pelo usuário durante a execução
+  do programa, geralmente via teclado.
+  **como apareceu no projeto:** as respostas digitadas para nome,
+  categoria e as sete notas.
+
+- **termo:** Input validation
+  **definição:** (já visto na Fase 1, agora aplicado à entrada
+  interativa) verificar se o dado digitado pelo usuário é válido antes
+  de aceitá-lo, pedindo novamente em caso de erro em vez de travar.
+  **como apareceu no projeto:** `parse_score` e `parse_non_empty_text`,
+  usados dentro do laço de `ask()`.
+
+- **termo:** Control flow (fluxo de controle)
+  **definição:** a ordem em que as instruções de um programa são
+  executadas, incluindo laços (`while`, `for`) e decisões (`if`/`try`/
+  `except`).
+  **como apareceu no projeto:** o laço `while True` dentro de `ask()`,
+  que só termina quando a entrada é válida.
+
+- **termo:** Reusable function (função reutilizável)
+  **definição:** função escrita de forma genérica o suficiente para ser
+  chamada em múltiplos contextos sem duplicar código.
+  **como apareceu no projeto:** `ask()` é usada tanto para pedir texto
+  (nome, categoria) quanto para pedir números (as sete notas), só
+  trocando o `parser` que recebe.
+
+- **termo:** Separation of concerns (separação de responsabilidades)
+  **definição:** princípio de projetar o código em partes que cuidam
+  cada uma de uma única responsabilidade, sem se misturar.
+  **como apareceu no projeto:** `src/main.py` nunca calcula score — ele
+  só coleta dados e chama `score_opportunity()`, que vive em
+  `src/scoring.py`.
+
+- **termo:** Application entry point (ponto de entrada da aplicação)
+  **definição:** o arquivo/função por onde a execução do programa
+  começa quando ele é executado diretamente.
+  **como apareceu no projeto:** `src/main.py`, com o bloco
+  `if __name__ == "__main__": main()`, executado via
+  `python -m src.main`.
+
+- **termo:** Presentation layer (camada de apresentação)
+  **definição:** a parte do sistema responsável por interagir com o
+  usuário (entrada e saída), mantida separada da lógica de negócio.
+  **como apareceu no projeto:** todo o `src/main.py` é camada de
+  apresentação; a lógica de negócio (scoring) permanece em
+  `src/scoring.py` e `src/models.py`.
+
+- **termo:** Dependency injection (injeção de dependência)
+  **definição:** passar uma dependência (como uma função de entrada)
+  como parâmetro, em vez de a função depender diretamente de uma
+  implementação fixa — isso facilita testes.
+  **como apareceu no projeto:** `ask(..., input_func=input)` permite
+  substituir o `input()` real por uma função falsa nos testes.
+
+### 7. Comandos/ferramentas usados
+
+```bash
+python -m src.main       # executar a CLI
+python -m pytest -v      # rodar todos os testes via módulo
+pytest -v                # rodar todos os testes direto
+```
+
+Ferramentas: Python 3.12, `pytest`, terminal/stdin para testar a CLI
+manualmente.
+
+### 8. Como explicar isso para um recrutador ou cliente
+
+"Eu construí uma interface de linha de comando que coleta os dados de um
+produto do usuário, valida cada entrada (rejeitando valores inválidos
+sem travar o programa) e gera um relatório completo de oportunidade. O
+mais importante tecnicamente é que a interface de usuário não contém
+nenhuma lógica de negócio — ela só reaproveita o motor de scoring já
+testado da fase anterior. Isso significa que, no futuro, posso trocar
+essa CLI por uma API web ou um bot, sem precisar tocar na lógica de
+cálculo, porque as duas camadas estão desacopladas. Também testei essa
+camada de entrada sem depender de um terminal real, usando injeção de
+dependência simples."
+
+### 9. O que devo lembrar desta fase
+
+- A camada que **conversa com o usuário** (CLI, e no futuro API ou
+  interface web) nunca deve conter a lógica de cálculo — ela só coleta,
+  valida e exibe. Isso é **separation of concerns** na prática.
+- **Nunca deixar o programa quebrar** por causa de uma entrada inválida
+  do usuário: sempre validar e pedir de novo, com uma mensagem clara.
+- Para testar código que normalmente chamaria `input()`, a solução mais
+  simples é **injetar a função de entrada como parâmetro**
+  (`input_func=input`), em vez de usar bibliotecas de mock mais
+  complexas — mais simples quase sempre é melhor.
+- Separar "montar o texto do relatório" (`format_report`, que retorna
+  uma `string`) de "imprimir o texto" (`print(...)` dentro de `main()`)
+  é o que permite testar o conteúdo do relatório sem capturar a saída do
+  terminal.
+- Um **application entry point** bem definido (`main()` +
+  `if __name__ == "__main__":`) deixa claro qual é o "botão de ligar" do
+  programa, separando-o dos módulos que são apenas bibliotecas internas.
