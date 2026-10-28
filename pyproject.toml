@@ -1,0 +1,9 @@
+[project]
+name = "ravz-product-hunter"
+version = "0.1.0"
+description = "AI-powered product research and validation system for Mercado Livre Brazil"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
