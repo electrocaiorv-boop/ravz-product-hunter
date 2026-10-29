@@ -1,18 +1,30 @@
-"""RAVZ Product Hunter CLI (Phase 2: Manual Analyzer, Phase 3: ML search).
+"""RAVZ Product Hunter CLI.
+
+Phase 2: Manual Analyzer. Phase 3: Mercado Livre search. Phase 4: Trend
+analysis.
 
 This module is the presentation layer: it collects input from the user,
-delegates all scoring logic to src.models / src.scoring and all Mercado
-Livre HTTP/JSON handling to src.integrations.mercadolivre, and renders the
-result. It contains no scoring math and no HTTP logic of its own.
+delegates all scoring logic to src.models / src.scoring, all Mercado
+Livre HTTP/JSON handling to src.integrations.mercadolivre, all Apify/trend
+HTTP/JSON handling to src.integrations.apify_trends, and all trend-metric
+math to src.trend_analysis, then renders the result. It contains no
+scoring math and no HTTP logic of its own.
 
 Input-collecting functions accept an injectable `input_func` so the
 retry/validation logic can be unit tested without calling the real
 built-in input().
 """
 
+from src.integrations.apify_trends import (
+    DEFAULT_GEO,
+    DEFAULT_TIMEFRAME,
+    ApifyTrendsError,
+    fetch_trend_data,
+)
 from src.integrations.mercadolivre import MercadoLivreError, search_products
 from src.models import ComponentScores, Product
 from src.scoring import score_opportunity
+from src.trend_analysis import analyze_trend
 
 SCORE_FIELDS = (
     ("demand", "Demand score"),
@@ -55,11 +67,17 @@ def parse_non_empty_text(raw: str) -> str:
 
 
 def parse_menu_choice(raw: str) -> int:
-    """Validate that raw text is one of the main menu options ("1" or "2")."""
+    """Validate that raw text is one of the main menu options ("1", "2" or "3")."""
     text = raw.strip()
-    if text not in {"1", "2"}:
-        raise ValueError("choose 1 or 2")
+    if text not in {"1", "2", "3"}:
+        raise ValueError("choose 1, 2 or 3")
     return int(text)
+
+
+def ask_with_default(prompt_text: str, default: str, input_func=input) -> str:
+    """Prompt once; return `default` if the user enters nothing."""
+    raw = input_func(prompt_text).strip()
+    return raw if raw else default
 
 
 def ask(prompt_text: str, parser, input_func=input):
@@ -160,6 +178,84 @@ def format_search_results(items) -> str:
     return "\n".join(blocks)
 
 
+TREND_DATA_WARNING = (
+    "Google Trends values represent relative search interest (0-100), "
+    "not absolute search volume."
+)
+
+
+def _format_optional(value, suffix: str = "") -> str:
+    if value is None:
+        return "not available"
+    if isinstance(value, float):
+        return f"{value:.2f}{suffix}"
+    return f"{value}{suffix}"
+
+
+def format_trend_report(data, metrics) -> str:
+    """Render a TrendData + TrendMetrics pair as a human-readable report.
+
+    The Provisional Trend Score is always labeled as provisional -- it
+    has not been validated against real sales outcomes.
+    """
+    lines = [
+        "=" * 50,
+        "TREND ANALYSIS REPORT (PROVISIONAL)",
+        "=" * 50,
+        f"Query: {data.query}",
+        f"Source: {data.source}",
+        f"Geo: {data.geo}",
+        f"Timeframe: {data.timeframe}",
+        f"Retrieved at: {data.retrieved_at}",
+        "",
+        f"Number of observations: {metrics.observation_count}",
+        f"Average interest: {_format_optional(metrics.average_interest)}",
+        f"Recent average: {_format_optional(metrics.recent_average)}",
+        f"Previous average: {_format_optional(metrics.previous_average)}",
+        f"Percentage change: {_format_optional(metrics.percentage_change, '%')}",
+        f"Direction: {metrics.direction}",
+        f"Volatility: {_format_optional(metrics.volatility)}",
+        "Provisional Trend Score: "
+        f"{_format_optional(metrics.provisional_trend_score)} "
+        "(PROVISIONAL -- not validated against real sales outcomes)",
+    ]
+
+    if metrics.notes:
+        lines.append("")
+        lines.append("Notes:")
+        for note in metrics.notes:
+            lines.append(f"  - {note}")
+
+    lines.append("")
+    lines.append("Top related searches:")
+    if data.related_top_queries:
+        for related in data.related_top_queries:
+            lines.append(f"  - {related.query} ({related.formatted_value or related.value})")
+    else:
+        lines.append("  (none returned)")
+
+    lines.append("")
+    lines.append("Rising related searches:")
+    if data.related_rising_queries:
+        for related in data.related_rising_queries:
+            lines.append(f"  - {related.query} ({related.formatted_value or related.value})")
+    else:
+        lines.append("  (none returned)")
+
+    scored_regions = [r for r in data.interest_by_region if r.value is not None]
+    if scored_regions:
+        top_regions = sorted(scored_regions, key=lambda r: r.value, reverse=True)[:5]
+        lines.append("")
+        lines.append("Highest-interest regions:")
+        for region in top_regions:
+            lines.append(f"  - {region.region_name or region.region_code}: {region.value}")
+
+    lines.append("")
+    lines.append(TREND_DATA_WARNING)
+    lines.append("=" * 50)
+    return "\n".join(lines)
+
+
 def run_manual_analyzer(input_func=input) -> None:
     """Run the Phase 2 Manual Product Analyzer flow end to end."""
     print("\nManual Product Analyzer")
@@ -192,17 +288,47 @@ def run_mercado_livre_search(input_func=input) -> None:
     print(format_search_results(items))
 
 
+def run_trend_analysis(input_func=input) -> None:
+    """Run the Phase 4 trend-analysis flow end to end.
+
+    Fetches trend data via the Apify integration layer, then computes
+    deterministic metrics and a provisional Trend Score via
+    src.trend_analysis. This Trend Score is not wired into the Phase 1
+    Opportunity Scoring Engine.
+    """
+    print("\nAnalyze Trend")
+    query = ask("Search term: ", parse_non_empty_text, input_func)
+    geo = ask_with_default(f"Geo [default {DEFAULT_GEO}]: ", DEFAULT_GEO, input_func)
+    timeframe = ask_with_default(
+        f"Timeframe [default {DEFAULT_TIMEFRAME}]: ", DEFAULT_TIMEFRAME, input_func
+    )
+
+    try:
+        data = fetch_trend_data(query, geo=geo, timeframe=timeframe)
+    except ApifyTrendsError as exc:
+        print(f"\nTrend analysis failed: {exc}")
+        return
+
+    metrics = analyze_trend(data)
+
+    print()
+    print(format_trend_report(data, metrics))
+
+
 def main() -> None:
     print("RAVZ Product Hunter")
     print("1. Manual Product Analyzer")
     print("2. Search Mercado Livre")
+    print("3. Analyze Trend")
 
-    choice = ask("Choose an option (1-2): ", parse_menu_choice)
+    choice = ask("Choose an option (1-3): ", parse_menu_choice)
 
     if choice == 1:
         run_manual_analyzer()
-    else:
+    elif choice == 2:
         run_mercado_livre_search()
+    else:
+        run_trend_analysis()
 
 
 if __name__ == "__main__":

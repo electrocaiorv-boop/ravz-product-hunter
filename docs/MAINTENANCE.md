@@ -1,14 +1,18 @@
 # MAINTENANCE.md — External Integration & Dependency Maintenance
 
 This project depends on systems it does not control: the Mercado Livre
-API and third-party Python packages. Those systems can change
+API, the Apify platform and the third-party Actor it runs on our
+behalf, and various Python packages. Those systems can change
 independently of this codebase at any time — an endpoint can be
 deprecated, a response field can be renamed, a rate limit can tighten, a
-package can release a breaking version. This document is a **checklist
-only**. It does not implement automation, cron jobs, GitHub Actions, or
-monitoring — that belongs to a later phase (see `CLAUDE.md` roadmap).
+package can release a breaking version, a third-party Actor can be
+abandoned by its author. This document is a **checklist only**. It does
+not implement automation, cron jobs, GitHub Actions, or monitoring —
+that belongs to a later phase (see `CLAUDE.md` roadmap).
 
 ## Weekly Integration Check
+
+### Mercado Livre
 
 - [ ] Mercado Livre official API documentation checked
 - [ ] Endpoints used by the project are still valid
@@ -17,9 +21,25 @@ monitoring — that belongs to a later phase (see `CLAUDE.md` roadmap).
 - [ ] Deprecation notices checked
 - [ ] Rate limits checked when documented
 - [ ] `requests` dependency checked
+
+### Apify / Google Trends (`themineworks/google-trends-pro`)
+
+- [ ] Apify platform availability checked
+- [ ] Actor `themineworks/google-trends-pro` availability checked
+- [ ] Actor last update date checked
+- [ ] Actor pricing checked
+- [ ] Actor output schema checked (field names/shape unchanged)
+- [ ] Actor rate-limit/degradation notices checked
+- [ ] Google Trends' own behavior/access changes checked
+- [ ] `APIFY_API_TOKEN` validity checked (without printing/logging it)
+- [ ] Live smoke test run (`bebedouro para gatos`, geo `BR`)
+- [ ] `requests`, `python-dotenv` dependency versions checked
+
+### Shared
+
 - [ ] `pytest` dependency checked
 - [ ] Other project dependencies checked
-- [ ] Full test suite executed
+- [ ] Full test suite executed (`python -m pytest -v` and `pytest -v`)
 - [ ] README updated if API behavior changed
 - [ ] LEARNING.md updated if a new technical concept was learned
 - [ ] MAINTENANCE.md updated if the maintenance process itself changes
@@ -30,7 +50,9 @@ monitoring — that belongs to a later phase (see `CLAUDE.md` roadmap).
 - **After the project becomes stable:** Every 2 to 4 weeks, depending on
   the external services used.
 
-## Current integration status (corrected after independent re-check, Phase 3)
+## Current integration status
+
+### Mercado Livre (corrected after independent re-check, Phase 3)
 
 A previous draft of this document incorrectly stated that free-text `q`
 search on `/sites/MLB/search` was "the current documented endpoint for
@@ -76,7 +98,47 @@ official documentation. This section reflects the corrected findings.
   `src/integrations/mercadolivre.py` needs to change — no other module
   touches the API directly.
 
+### Apify / Google Trends (`themineworks/google-trends-pro`, Phase 4)
+
+- **Platform endpoint called:**
+  `POST https://api.apify.com/v2/actors/themineworks~google-trends-pro/run-sync-get-dataset-items`
+  — official Apify REST API, documented at
+  https://docs.apify.com/api/v2/act-run-sync-get-dataset-items-post.
+- **Actor:** `themineworks/google-trends-pro` — a third-party,
+  **unofficial** Google Trends scraper running on Apify's own
+  infrastructure. Apify-the-platform is low-risk (official, funded,
+  documented); this specific Actor is medium-risk (no versioned schema
+  guarantee, could be abandoned or broken by its author at any time).
+- **Authentication:** `Authorization: Bearer <APIFY_API_TOKEN>` header,
+  loaded from `.env` via `python-dotenv` (`src/config.py`). Required —
+  calls fail fast with `ApifyTrendsConfigurationError` if missing.
+- **Observed quirk (2026-10-29 live validation):** this endpoint returns
+  `HTTP 201 Created` on success, not `200`. The integration treats any
+  `2xx` as success; this was caught by running a real live query during
+  implementation, not assumed.
+- **Known risk — document explicitly:** the Actor reports **degraded
+  reliability since 2026-07-30 due to Google-side rate limiting**. This
+  is exactly why the Actor must remain fully replaceable behind
+  `src/integrations/apify_trends.py` without requiring any change to
+  `src/trend_analysis.py` or `src/trend_models.py` — confirmed by
+  Phase 4's architecture (trend-analysis logic never imports Apify).
+- **Cost (confirmed live):** $0.0025 per keyword report, within Apify's
+  free $5/month credit (~2,000 free reports/month for this project's
+  current usage).
+- **Data semantics:** `interest_over_time` values are a 0-100 *relative*
+  index, not absolute search volume — never compare raw values across
+  unrelated keywords.
+- **Observed behavior for a long-tail query:** `bebedouro automatico
+  gatos` returned a technically successful response but with almost no
+  signal (1 non-zero point out of 53) — a real data limitation (not
+  enough search volume for that exact phrase), not an integration
+  failure. The broader query `bebedouro para gatos` returned rich,
+  varied data (53 points, 12 top + 2 rising related queries, 27
+  regions).
+
 ## How to perform the check
+
+### Mercado Livre
 
 1. Re-read developers.mercadolivre.com.br/pt_br/itens-e-buscas and
    confirm whether `/sites/{SITE_ID}/search` still documents only
@@ -93,7 +155,32 @@ official documentation. This section reflects the corrected findings.
    `available_quantity`). Re-verify the `available_quantity` bucket
    values are unchanged. Update the mapping if fields were renamed,
    removed, or if the bucket values changed.
-4. Check `pip list --outdated` for `requests` and `pytest`.
-5. Run `python -m pytest -v` and `pytest -v` — both must pass.
-6. Update `README.md`, `docs/LEARNING.md`, and this file if anything
+
+### Apify / Google Trends
+
+1. Confirm the Apify account/token is still active (check
+   `apify_token_configured()` via `src/config.py` — never print the
+   value) and check Apify's status page for platform-wide incidents.
+2. Open the Actor's page (`apify.com/themineworks/google-trends-pro`)
+   and check: last update date, current pricing, open issues/reviews
+   mentioning breakage, and any note about Google-side rate limiting
+   beyond what's already recorded above.
+3. Run a live smoke test: `python -m src.main`, choose option `3`,
+   search `bebedouro para gatos`, geo `BR`, timeframe `today 12-m`.
+   Confirm the response still has `interest_over_time`,
+   `interest_by_region`, and `related_queries.top`/`related_queries.rising`
+   in the shape `_map_report_row()` in `src/integrations/apify_trends.py`
+   expects. Note the exact HTTP status code returned (it was `201`, not
+   `200`, as of this phase).
+4. Check the run's actual cost via
+   `GET https://api.apify.com/v2/actors/themineworks~google-trends-pro/runs`
+   (field `usageTotalUsd`) and compare against the $0.0025/report
+   recorded above.
+
+### Shared
+
+1. Check `pip list --outdated` for `requests`, `python-dotenv`, and
+   `pytest`.
+2. Run `python -m pytest -v` and `pytest -v` — both must pass.
+3. Update `README.md`, `docs/LEARNING.md`, and this file if anything
    changed.

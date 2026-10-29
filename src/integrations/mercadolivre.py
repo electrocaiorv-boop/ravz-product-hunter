@@ -50,6 +50,8 @@ from dataclasses import dataclass
 
 import requests
 
+import src.config  # noqa: F401 -- side effect: loads .env before os.environ.get() below
+
 BASE_URL = "https://api.mercadolibre.com"
 SITE_ID = "MLB"
 DEFAULT_TIMEOUT = 10

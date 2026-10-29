@@ -1,20 +1,26 @@
 import pytest
 
+from src.integrations.apify_trends import ApifyTrendsResponseError
 from src.integrations.mercadolivre import MercadoLivreItem, MercadoLivreResponseError
 from src.main import (
     ask,
+    ask_with_default,
     collect_product,
     collect_scores,
     format_report,
     format_search_results,
+    format_trend_report,
     parse_menu_choice,
     parse_non_empty_text,
     parse_score,
     recommend,
     run_mercado_livre_search,
+    run_trend_analysis,
 )
 from src.models import ComponentScores, Product
 from src.scoring import score_opportunity
+from src.trend_analysis import analyze_trend
+from src.trend_models import RelatedQuery, TrendData, TrendPoint, TrendRegion
 
 
 def make_input(values):
@@ -124,13 +130,23 @@ def test_recommend_handles_unknown_classification():
 def test_parse_menu_choice_accepts_valid_options():
     assert parse_menu_choice("1") == 1
     assert parse_menu_choice("2") == 2
-    assert parse_menu_choice(" 2 ") == 2
+    assert parse_menu_choice(" 3 ") == 3
 
 
-@pytest.mark.parametrize("raw", ["0", "3", "abc", ""])
+@pytest.mark.parametrize("raw", ["0", "4", "abc", ""])
 def test_parse_menu_choice_rejects_invalid_options(raw):
     with pytest.raises(ValueError):
         parse_menu_choice(raw)
+
+
+def test_ask_with_default_returns_default_on_empty_input():
+    fake_input = make_input([""])
+    assert ask_with_default("Geo: ", "BR", fake_input) == "BR"
+
+
+def test_ask_with_default_returns_provided_value():
+    fake_input = make_input(["US"])
+    assert ask_with_default("Geo: ", "BR", fake_input) == "US"
 
 
 def test_format_search_results_handles_empty_list():
@@ -191,3 +207,62 @@ def test_run_mercado_livre_search_reports_errors_without_crashing(monkeypatch, c
 
     captured = capsys.readouterr()
     assert "Mercado Livre search failed" in captured.out
+
+
+def _make_trend_data():
+    points = [
+        TrendPoint(date="2026-01-01", value=10, formatted_value="10"),
+        TrendPoint(date="2026-02-01", value=90, formatted_value="90"),
+    ]
+    regions = [
+        TrendRegion(region_code="BR-SP", region_name="Sao Paulo", value=100),
+        TrendRegion(region_code="BR-RJ", region_name="Rio de Janeiro", value=80),
+    ]
+    top = [RelatedQuery(query="bebedouro para gatos", value=100, formatted_value="100", link=None)]
+    rising = [RelatedQuery(query="bebedouro eletrico", value=250, formatted_value="+250%", link=None)]
+    return TrendData(
+        query="bebedouro automatico gatos",
+        geo="BR",
+        timeframe="today 12-m",
+        retrieved_at="2026-10-20T12:00:00Z",
+        interest_over_time=points,
+        interest_by_region=regions,
+        related_top_queries=top,
+        related_rising_queries=rising,
+        source="apify:themineworks/google-trends-pro",
+    )
+
+
+def test_format_trend_report_contains_key_sections():
+    data = _make_trend_data()
+    metrics = analyze_trend(data)
+    report = format_trend_report(data, metrics)
+
+    assert "bebedouro automatico gatos" in report
+    assert "apify:themineworks/google-trends-pro" in report
+    assert "Geo: BR" in report
+    assert "Number of observations: 2" in report
+    assert "Direction: growing" in report
+    assert "PROVISIONAL" in report
+    assert "Top related searches" in report
+    assert "bebedouro para gatos" in report
+    assert "Rising related searches" in report
+    assert "bebedouro eletrico" in report
+    assert "Sao Paulo" in report
+    assert (
+        "Google Trends values represent relative search interest (0-100), "
+        "not absolute search volume." in report
+    )
+
+
+def test_run_trend_analysis_reports_errors_without_crashing(monkeypatch, capsys):
+    def fake_fetch_trend_data(query, geo="BR", timeframe="today 12-m"):
+        raise ApifyTrendsResponseError(status_code=401, message="Unauthorized")
+
+    monkeypatch.setattr("src.main.fetch_trend_data", fake_fetch_trend_data)
+    fake_input = make_input(["bebedouro automatico gatos", "", ""])
+
+    run_trend_analysis(fake_input)
+
+    captured = capsys.readouterr()
+    assert "Trend analysis failed" in captured.out

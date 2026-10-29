@@ -933,3 +933,338 @@ testei, o que já está documentado como um item a investigar."
   e, quando a documentação e o comportamento real divergem (como
   aconteceu aqui), documentar os dois lados honestamente, em vez de
   fingir que um deles não existe.
+
+---
+
+## Fase 4 — Dados de tendência (Apify + Google Trends) e análise determinística
+
+### 1. Nome da fase
+
+**Fase 4: primeira fonte de dados de tendência (Apify Actor sobre
+Google Trends) e camada de análise de tendência determinística, com um
+Trend Score provisório.**
+
+### 2. Explicação simples
+
+Imagine que você quer saber se um produto "está em alta" ou "está
+morrendo" nas buscas das pessoas. O Google Trends guarda esse tipo de
+informação, mas não existe uma porta oficial e aberta para qualquer um
+pegar esses dados sem complicação (a porta oficial do Google ainda só
+deixa entrar um grupo pequeno e convidado de desenvolvedores).
+
+Para resolver isso, usamos a **Apify** — pense na Apify como uma
+**empresa de entregas**. Nós fazemos um pedido para a Apify ("quero
+saber o interesse de busca pelo termo 'bebedouro para gatos' no
+Brasil, no último ano"). A Apify manda um "entregador" especializado —
+chamado de **Actor**, no caso o `themineworks/google-trends-pro` — para
+ir buscar essa informação no Google Trends. O Actor volta com um
+**pacote de dados organizados** (um monte de números e textos). A nossa
+"camada de integração" (`src/integrations/apify_trends.py`) é quem abre
+esse pacote, confere se está tudo certo, e traduz para o formato interno
+que o resto do nosso sistema entende. Só depois disso, uma segunda parte
+do sistema — a "calculadora de tendência"
+(`src/trend_analysis.py`) — pega esses números já traduzidos e calcula,
+de forma sempre igual para a mesma entrada (**determinística**): a
+média de interesse, se está subindo ou caindo, o quanto está subindo ou
+caindo, e o quão instável é essa curva.
+
+Um detalhe importante: o número que o Google Trends dá (de 0 a 100) não
+é "quantidade de pessoas que buscaram" — é como um **termômetro
+relativo**: 100 significa "o pico de interesse daquele próprio termo",
+não "cem buscas" nem "o termo mais buscado do mundo". Comparar o número
+100 de um produto com o número 100 de outro produto diferente não
+significa que os dois têm a mesma demanda real.
+
+Também aconteceu algo real e interessante nesta fase: ao testar de
+verdade, a Apify respondeu com o código HTTP **201** em vez do 200 que a
+gente esperava — e nosso primeiro código tratou isso como um erro! Foi
+só testando com dados reais que a gente descobriu e corrigiu esse
+detalhe. Isso mostra por que validar com a API de verdade é tão
+importante, mesmo depois de escrever todos os testes com dados falsos.
+
+### 3. Explicação técnica
+
+Implementamos a primeira fonte de **time series** de interesse de busca
+do projeto, através de uma **integration layer** isolada
+(`src/integrations/apify_trends.py`) que fala com uma **SaaS API**
+de terceiros (a Apify), nunca expondo HTTP, tokens ou JSON cru para o
+resto do sistema.
+
+- **Third-party API / SaaS API**: a Apify é uma plataforma paga (SaaS)
+  que executa "Actors" sob demanda e devolve os resultados via uma API
+  REST oficial e documentada. Nós chamamos
+  `POST https://api.apify.com/v2/actors/themineworks~google-trends-pro/run-sync-get-dataset-items`
+  usando `requests` puro — sem SDK.
+- **Actor**: uma unidade de automação hospedada na infraestrutura da
+  Apify, escrita por terceiros (`themineworks`), que por dentro faz o
+  trabalho de raspar o Google Trends. A Apify-plataforma é oficial e
+  estável; o Actor específico é não-oficial e tem risco de manutenção
+  próprio (documentado em `docs/MAINTENANCE.md`, incluindo um período de
+  confiabilidade degradada registrado desde 2026-07-30 por limitação de
+  taxa do lado do Google).
+- **API token**: a autenticação usa `Authorization: Bearer
+  <APIFY_API_TOKEN>` — nunca em query string, nunca hardcoded. O token é
+  carregado de `.env` via `python-dotenv` (`src/config.py`, já criado na
+  etapa anterior) e nunca é impresso ou logado.
+- **Integration layer / data mapping / schema**: a resposta crua da
+  Apify é uma lista de "linhas" (dataset items), algumas sendo o
+  relatório real (`keyword`, `interest_over_time`, `interest_by_region`,
+  `related_queries`...) e outras sendo linhas especiais
+  (`_type: "error"`, `"summary"`, `"info"`) que precisam ser
+  identificadas e ignoradas (ou tratadas como erro, no caso de
+  `"error"`) antes de qualquer mapeamento. Só as linhas de relatório
+  real são convertidas, por `_map_report_row()`, para o nosso **schema**
+  interno e neutro (`src/trend_models.py`: `TrendData`, `TrendPoint`,
+  `TrendRegion`, `RelatedQuery`) — este schema não sabe nada sobre
+  Apify, só sobre "o que é um dado de tendência" de forma genérica.
+- **Relative index / normalization**: os valores de `interest_over_time`
+  (0-100) são um índice relativo, normalizado pelo próprio Google em
+  relação ao pico de interesse daquele termo específico — não é volume
+  absoluto de busca, e não é comparável entre termos diferentes sem
+  cuidado. Documentamos isso extensivamente nos docstrings e no README
+  para que ninguém confunda "100" com "o produto mais buscado do
+  Brasil".
+- **Moving/recent average**: `src/trend_analysis.py` divide a série em
+  duas metades (período anterior e período recente) e calcula a média
+  de cada uma -- uma forma simples e determinística de comparar "como
+  estava" com "como está agora", sem precisar de bibliotecas de séries
+  temporais mais pesadas.
+- **Percentage change**: `(recent_average - previous_average) /
+  previous_average * 100` -- a variação percentual entre as duas
+  médias, usada tanto para classificar a direção (`growing` / `stable`
+  / `declining`, com limiares de +-10% documentados e fáceis de mudar)
+  quanto como um dos ingredientes do Trend Score.
+- **Volatility**: o desvio padrão (`statistics.pstdev`) dos valores da
+  série -- um número alto significa uma curva "nervosa", que sobe e
+  desce muito, o que reduz nossa confiança no sinal e é usado como uma
+  penalidade no Trend Score.
+- **Deterministic analysis**: dado o mesmo `TrendData`, `analyze_trend()`
+  sempre devolve exatamente o mesmo resultado -- sem aleatoriedade, sem
+  chamada a LLM, sem depender da hora do relógio. Isso é o que torna
+  essa camada 100% testável com dados fixos.
+- **Provisional scoring model / calibration**: criamos um Trend Score de
+  0 a 100, combinando crescimento, nível de interesse recente, uma
+  direção sustentada e uma penalidade de volatilidade -- mas ele é
+  explicitamente rotulado **PROVISIONAL** em todo lugar que aparece,
+  porque ainda não foi validado contra vendas reais. Os pesos e escalas
+  da fórmula são constantes isoladas no topo do módulo, pensadas para
+  serem recalibradas (**calibration**) depois, sem reescrever a lógica.
+- **Vendor dependency / rate limiting**: dependemos de um fornecedor
+  (Apify) e, por trás dele, de um Actor não-oficial sujeito à limitação
+  de taxa do Google (**rate limiting**) -- por isso a arquitetura
+  mantém `trend_analysis.py` completamente alheio a quem fornece os
+  dados, permitindo troca de fornecedor sem reescrever a análise.
+
+### 4. Conexão entre o simples e o técnico
+
+A "empresa de entregas" é a **SaaS API** da Apify; o "entregador
+especializado" é o **Actor**; o "pedido que fazemos" é a chamada HTTP
+autenticada com o **API token**; o "pacote de dados organizados" é a
+resposta crua da Apify, que nossa **integration layer** abre e traduz
+(**data mapping**) para o nosso próprio **schema** interno. O
+"termômetro relativo" de 0 a 100 é o **relative index**
+(**normalization** feita pelo próprio Google). A "calculadora de
+tendência" que sempre dá a mesma resposta para a mesma entrada é a
+**deterministic analysis**; "subiu ou caiu, e quanto" é a
+**moving/recent average** e o **percentage change**; "quão nervosa é a
+curva" é a **volatility**. E o fato de termos descoberto, testando de
+verdade, que a Apify responde com `201` em vez de `200` é exatamente por
+que validação com dados reais (não só mocks) continua sendo parte do
+processo de engenharia, mesmo com testes automatizados passando 100%.
+
+### 5. O que implementamos na prática
+
+- `src/trend_models.py` — modelos internos neutros: `TrendPoint`,
+  `TrendRegion`, `RelatedQuery`, `TrendData`. Não sabem nada sobre
+  Apify.
+- `src/integrations/apify_trends.py` — `fetch_trend_data(query, geo="BR",
+  timeframe="today 12-m")`, hierarquia de exceções
+  (`ApifyTrendsConfigurationError`, `ApifyTrendsTimeoutError`,
+  `ApifyTrendsConnectionError`, `ApifyTrendsResponseError`,
+  `ApifyTrendsDataError`, `ApifyTrendsActorError`), filtragem de linhas
+  especiais (`_type` em `error`/`summary`/`info`), e a correção do `2xx`
+  (não só `200`) descoberta na validação em tempo real.
+- `src/trend_analysis.py` — `analyze_interest_series()` /
+  `analyze_trend()`, `TrendMetrics`, limiares de direção, e a fórmula do
+  Trend Score provisório, tudo documentado no docstring do módulo.
+- `src/main.py` — nova opção `3. Analyze Trend` no menu, perguntando
+  termo de busca, geo (padrão `BR`) e timeframe (padrão `today 12-m`),
+  exibindo o relatório completo e o aviso sobre valores relativos.
+- `tests/test_trend_analysis.py` — 10 testes determinísticos (série
+  fortemente crescente, levemente crescente, estável, em queda, volátil,
+  curta, vazia, com zeros, com valores ausentes, delegação
+  `analyze_trend`).
+- `tests/test_apify_trends_integration.py` — 17 testes com
+  `requests.post` e o token totalmente mockados (sucesso, sucesso com
+  `201`, linha de erro do Actor, apenas linhas de resumo/info, token
+  ausente, timeout, erro de conexão, cada status HTTP de erro, JSON
+  malformado, dataset vazio, schema inesperado, query vazia).
+- Validação real feita com o token de verdade: `bebedouro automatico
+  gatos` (quase sem sinal, 1 ponto não-zero em 53) e `bebedouro para
+  gatos` (dados ricos: 53 pontos, 12 buscas relacionadas "top", 2
+  "rising", 27 regiões) -- custo confirmado de $0.0025 por consulta.
+- `docs/MAINTENANCE.md` e `README.md` atualizados com o status real
+  desta integração, incluindo o risco documentado de confiabilidade
+  degradada do Actor desde 2026-07-30.
+
+### 6. Termos técnicos aprendidos
+
+- **termo:** Third-party API / SaaS API
+  **definição:** uma API fornecida por uma empresa externa, geralmente
+  como um serviço pago (Software as a Service), que executa trabalho
+  por nós em troca de uma chamada autenticada.
+  **como apareceu no projeto:** a Apify, chamada via sua API REST
+  oficial para executar o Actor de Google Trends.
+
+- **termo:** Actor (Apify)
+  **definição:** uma unidade de automação hospedada na Apify, escrita
+  por um desenvolvedor (que pode ser a própria Apify ou um terceiro),
+  que executa uma tarefa específica (aqui, raspar o Google Trends) e
+  devolve um dataset.
+  **como apareceu no projeto:** `themineworks/google-trends-pro` —
+  identificado na URL da API como `themineworks~google-trends-pro`.
+
+- **termo:** API token
+  **definição:** uma credencial que identifica e autoriza quem está
+  fazendo uma chamada a uma API, geralmente enviada em um cabeçalho
+  HTTP.
+  **como apareceu no projeto:** `APIFY_API_TOKEN`, carregado de `.env`
+  via `python-dotenv`, enviado como `Authorization: Bearer <token>`,
+  nunca impresso, logado ou commitado.
+
+- **termo:** Integration layer
+  **definição:** um módulo dedicado que isola todo o conhecimento sobre
+  um sistema externo específico, traduzindo sua resposta para um
+  formato interno antes de qualquer outra parte do sistema tocar nela.
+  **como apareceu no projeto:** `src/integrations/apify_trends.py` é o
+  único arquivo que conhece a Apify, o Actor, e o JSON cru que ele
+  devolve.
+
+- **termo:** Data mapping / Schema
+  **definição:** a transformação de uma estrutura de dados externa
+  (schema de origem) para uma estrutura de dados própria (schema
+  interno), extraindo apenas os campos que realmente existem.
+  **como apareceu no projeto:** `_map_report_row()` converte o JSON cru
+  da Apify em `TrendData`; linhas com `_type` especial (`error`,
+  `summary`, `info`) são identificadas pelo schema e tratadas à parte
+  (nunca mapeadas como se fossem um relatório real).
+
+- **termo:** Time series (série temporal)
+  **definição:** uma sequência de valores associados a pontos no tempo,
+  geralmente ordenada cronologicamente.
+  **como apareceu no projeto:** `interest_over_time`, a lista de
+  `TrendPoint` (data + valor) que alimenta toda a análise de tendência.
+
+- **termo:** Relative index / Normalization
+  **definição:** um valor reescalado em relação a um ponto de
+  referência (aqui, o pico de interesse do próprio termo) em vez de ser
+  uma contagem absoluta.
+  **como apareceu no projeto:** os valores de 0 a 100 do Google Trends —
+  documentados exaustivamente como "não é volume absoluto de busca".
+
+- **termo:** Moving/recent average (média móvel/recente)
+  **definição:** a média de um subconjunto mais recente de uma série,
+  usada para comparar "agora" com "antes" sem precisar de toda a
+  história.
+  **como apareceu no projeto:** `recent_average` e `previous_average`,
+  calculados dividindo a série em duas metades.
+
+- **termo:** Percentage change (variação percentual)
+  **definição:** a diferença relativa entre dois valores, expressa como
+  porcentagem do valor de referência.
+  **como apareceu no projeto:** `percentage_change =
+  (recent_average - previous_average) / previous_average * 100`, usado
+  para classificar a direção da tendência.
+
+- **termo:** Volatility (volatilidade)
+  **definição:** uma medida de quão dispersos/instáveis são os valores
+  de uma série, geralmente o desvio padrão.
+  **como apareceu no projeto:** `statistics.pstdev(values)`, usado como
+  penalidade no Trend Score provisório para séries "nervosas".
+
+- **termo:** Deterministic analysis (análise determinística)
+  **definição:** um cálculo cujo resultado depende apenas dos dados de
+  entrada, sempre o mesmo para a mesma entrada -- sem aleatoriedade, sem
+  IA generativa, sem depender do relógio.
+  **como apareceu no projeto:** `src/trend_analysis.py` inteiro, testado
+  com 10 casos fixos que sempre produzem o mesmo resultado.
+
+- **termo:** Provisional scoring model / Calibration
+  **definição:** um modelo de pontuação documentado e ajustável, mas
+  explicitamente rotulado como "ainda não validado", com parâmetros
+  isolados para facilitar a recalibração futura (ajuste de pesos usando
+  dados reais).
+  **como apareceu no projeto:** o Trend Score de 0-100, rotulado
+  "PROVISIONAL" em todo lugar que aparece, com pesos/escalas como
+  constantes de módulo fáceis de mudar depois.
+
+- **termo:** Vendor dependency (dependência de fornecedor)
+  **definição:** depender de uma empresa/serviço externo para uma
+  funcionalidade, aceitando o risco de que esse fornecedor mude ou
+  descontinue o serviço.
+  **como apareceu no projeto:** a dependência da Apify e, por trás
+  dela, de um Actor de terceiros não-oficial — mitigada mantendo
+  `trend_analysis.py` sem nenhum conhecimento de quem fornece os dados.
+
+- **termo:** Rate limiting (limitação de taxa)
+  **definição:** uma restrição imposta por um serviço sobre quantas
+  chamadas podem ser feitas em um período de tempo, geralmente para
+  proteger a infraestrutura ou cumprir políticas de uso.
+  **como apareceu no projeto:** o Actor da Apify sofre limitação de taxa
+  do lado do Google, com confiabilidade degradada documentada desde
+  2026-07-30.
+
+### 7. Comandos/ferramentas usados
+
+```bash
+python -m src.main          # executar a CLI (opção 3 = Analyze Trend)
+python -m pytest -v         # rodar todos os testes via módulo
+pytest -v                   # rodar todos os testes direto
+```
+
+Ferramentas: Python 3.12, `requests`, `python-dotenv`, `pytest`,
+`monkeypatch`, conta Apify + token real para a validação em tempo real,
+pesquisa de documentação oficial (Apify, Google Trends, Wikipedia
+Pageviews) para a avaliação de fontes.
+
+### 8. Como explicar isso para um recrutador ou cliente
+
+"Eu avaliei formalmente três fontes de dados de tendência antes de
+escrever qualquer código -- API oficial do Google (inacessível, ainda
+em alpha fechado), uma biblioteca não-oficial popular (que eu
+efetivamente testei e descobri que nem roda neste ambiente, por causa de
+uma política de segurança do Windows bloqueando uma dependência nativa)
+e a Wikipedia (oficial, mas não serve para produtos de ecommerce
+específicos) -- e escolhi a Apify como a opção comprovadamente
+executável, de baixo custo e com dados realmente relevantes. Construí a
+integração isolada da lógica de análise, então a fonte de dados pode
+trocar no futuro sem reescrever a matemática. Testei toda a lógica com
+mocks, e também validei com uma chamada real, onde descobri e corrigi um
+detalhe real da API (código HTTP 201 em vez de 200) que nenhum mock
+teria revelado. O resultado final é um Trend Score explicável e
+provisório, claramente rotulado como não validado, pronto para ser
+recalibrado quando tivermos dados de vendas reais."
+
+### 9. O que devo lembrar desta fase
+
+- **Avaliar fontes de dados antes de escrever código** evitou que eu
+  construísse uma integração em torno de uma biblioteca
+  (`pytrends`) que nem roda no ambiente real do projeto -- descobri isso
+  testando de verdade, não assumindo.
+- **Separar a fonte de dados da lógica de análise** (`trend_models.py` +
+  `trend_analysis.py` sem nenhum import de Apify) é o que permite trocar
+  de fornecedor no futuro sem tocar na matemática.
+- **Valores de 0-100 do Google Trends são relativos, não absolutos** --
+  documentar isso de forma proeminente evita que alguém confunda "100"
+  com "demanda real alta".
+- **Testar com mocks não substitui validar com a API real**: só a
+  chamada real revelou que a Apify devolve `201`, não `200`, em caso de
+  sucesso -- um detalhe que nenhum teste com dados falsos teria pego.
+- **Um score provisório precisa ser rotulado como provisório em todo
+  lugar que aparece** (CLI, README, docstring) -- isso evita que alguém
+  (inclusive eu mesmo, no futuro) trate um número ainda não validado
+  como se fosse definitivo.
+- **Documentar o risco de fornecedor explicitamente** (Actor não-oficial,
+  confiabilidade degradada desde 2026-07-30) é o que torna esse risco
+  gerenciável -- ele fica visível e revisável, em vez de escondido
+  dentro do código.
