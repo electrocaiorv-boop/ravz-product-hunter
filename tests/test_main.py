@@ -1,13 +1,17 @@
 import pytest
 
+from src.integrations.mercadolivre import MercadoLivreItem, MercadoLivreResponseError
 from src.main import (
     ask,
     collect_product,
     collect_scores,
     format_report,
+    format_search_results,
+    parse_menu_choice,
     parse_non_empty_text,
     parse_score,
     recommend,
+    run_mercado_livre_search,
 )
 from src.models import ComponentScores, Product
 from src.scoring import score_opportunity
@@ -115,3 +119,75 @@ def test_recommend_has_a_message_for_every_classification(classification):
 
 def test_recommend_handles_unknown_classification():
     assert recommend("Something else") == "No recommendation available."
+
+
+def test_parse_menu_choice_accepts_valid_options():
+    assert parse_menu_choice("1") == 1
+    assert parse_menu_choice("2") == 2
+    assert parse_menu_choice(" 2 ") == 2
+
+
+@pytest.mark.parametrize("raw", ["0", "3", "abc", ""])
+def test_parse_menu_choice_rejects_invalid_options(raw):
+    with pytest.raises(ValueError):
+        parse_menu_choice(raw)
+
+
+def test_format_search_results_handles_empty_list():
+    assert format_search_results([]) == "No results found."
+
+
+def test_format_search_results_shows_only_available_fields():
+    item = MercadoLivreItem(
+        item_id="MLB123",
+        title="Bebedouro Automatico para Gatos",
+        price=89.9,
+        currency_id="BRL",
+        seller_id=42,
+        category_id="MLB1234",
+        condition="new",
+        permalink="https://produto.mercadolivre.com.br/MLB123",
+        free_shipping=True,
+        available_quantity=15,
+    )
+    report = format_search_results([item])
+
+    assert "Bebedouro Automatico para Gatos" in report
+    assert "MLB123" in report
+    assert "89.9" in report
+    assert "BRL" in report
+    assert "MLB1234" in report
+    assert "available quantity (reference, not exact stock): 15" in report
+
+
+def test_format_search_results_omits_missing_fields():
+    item = MercadoLivreItem(
+        item_id="MLB999",
+        title="Produto sem detalhes",
+        price=None,
+        currency_id=None,
+        seller_id=None,
+        category_id=None,
+        condition=None,
+        permalink=None,
+        free_shipping=None,
+        available_quantity=None,
+    )
+    report = format_search_results([item])
+
+    assert "price" not in report
+    assert "category" not in report
+    assert "condition" not in report
+
+
+def test_run_mercado_livre_search_reports_errors_without_crashing(monkeypatch, capsys):
+    def fake_search_products(query, limit=10):
+        raise MercadoLivreResponseError(status_code=403, message="Forbidden")
+
+    monkeypatch.setattr("src.main.search_products", fake_search_products)
+    fake_input = make_input(["bebedouro automatico gatos"])
+
+    run_mercado_livre_search(fake_input)
+
+    captured = capsys.readouterr()
+    assert "Mercado Livre search failed" in captured.out

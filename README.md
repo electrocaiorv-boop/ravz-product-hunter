@@ -107,6 +107,126 @@ If you type an invalid score (non-numeric, or outside 0-100), the CLI
 prints `Invalid input: ...` and asks the same question again instead of
 crashing.
 
+## Phase 3 scope
+
+Phase 3 adds the project's first real external data integration: a
+Mercado Livre client that retrieves, validates, maps, and displays real
+marketplace search results. It intentionally does **not** compute an
+Opportunity Score from this data yet, and does **not** add a database,
+agents, scraping, n8n, or MCP — those come later. The goal of this phase
+is only to build a reliable, well-tested boundary between the application
+and an external API before any agent depends on it.
+
+What Phase 3 provides:
+
+- `src/integrations/mercadolivre.py` — the only module that knows about
+  HTTP, JSON, or the Mercado Livre API. Exposes a single public function,
+  `search_products(query, limit=10)`, that returns a list of
+  `MercadoLivreItem` (a dataclass distinct from the Phase 1
+  `Product`/`ComponentScores`/`OpportunityResult` models). Every other
+  module only ever imports this function, never `requests` directly.
+- `tests/test_mercadolivre_integration.py` — unit tests using a fake
+  `requests.get` (no live network calls), covering success, missing
+  optional fields, empty results, timeout, connection failure, every
+  non-200 status code, malformed JSON, a missing `results` field, and
+  invalid `query`/`limit` arguments.
+- A new CLI menu in `src/main.py`:
+  ```
+  1. Manual Product Analyzer
+  2. Search Mercado Livre
+  ```
+- `docs/MAINTENANCE.md` — a recurring checklist for keeping this
+  integration (and its dependencies) healthy over time, since external
+  APIs change independently of this codebase.
+
+### Endpoint used
+
+```
+GET https://api.mercadolibre.com/sites/MLB/search?q=<query>&limit=<limit>
+```
+
+### Documentation status (re-verified — corrected from this phase's first draft)
+
+The current official "Itens e Buscas" documentation
+(developers.mercadolivre.com.br/pt_br/itens-e-buscas, last updated by
+Mercado Livre on **2026-08-31**) documents `/sites/{SITE_ID}/search`
+**only** for `nickname` and `seller_id` lookups, and every example for
+that endpoint sends `Authorization: Bearer ACCESS_TOKEN`.
+
+**A free-text `q` parameter against this endpoint is NOT part of that
+documented contract.** The officially documented `q` parameter belongs
+to a different endpoint, `/products/search` (a catalog/GTIN lookup used
+for publishing flows, out of scope here) — not to
+`/sites/{SITE_ID}/search`.
+
+**Classification: experimental / not officially documented**, kept only
+because it's useful for this learning phase to practice safe HTTP, error
+handling, and data mapping end to end — not because Mercado Livre
+guarantees this behavior. It may change shape, stop working, or be
+restricted further at any time without notice.
+
+### Authentication
+
+Not previously verified correctly — corrected here: because every
+current official example for `/sites/{SITE_ID}/search` requires
+`Authorization: Bearer ACCESS_TOKEN`, authentication should be treated
+as **expected** by Mercado Livre for this endpoint family, even though
+it's unverified for this module's undocumented `q` usage specifically.
+This client sends `Authorization: Bearer <token>` automatically if
+`MERCADO_LIVRE_ACCESS_TOKEN` is set in the environment; it still runs
+without one (never hardcoded, never committed — see `.env.example`), but
+a request without a token is more likely to fail.
+
+### `available_quantity` is a reference bucket, not exact stock
+
+Mercado Livre's public item/search resources report `available_quantity`
+as a **reference bucket**: a real stock count inside a range is rounded
+down to that range's floor before being published (e.g. a real stock of
+51-100 units is returned as the reference value `50`). This project
+treats it as "at least roughly this many," never as precise inventory,
+and the CLI labels it accordingly
+(`available quantity (reference, not exact stock)`).
+
+### Manual validation result (re-run for this correction pass)
+
+With no `MERCADO_LIVRE_ACCESS_TOKEN` configured, a direct call to this
+endpoint with `q=bebedouro automatico gatos` returned:
+
+```
+status_code: 403
+body: {"message":"forbidden","error":"forbidden","status":403,"cause":[]}
+```
+
+No token was used (none is configured in this environment), and no
+results were returned. The integration layer surfaced this as a clear,
+handled `MercadoLivreResponseError` — not a raw traceback — but the
+failure means this phase could **not** demonstrate a live successful
+`q` search. Whether a valid token and/or a non-blocked network would
+succeed is unverified; see `docs/MAINTENANCE.md` for what to re-check.
+
+### Run a search
+
+```bash
+python -m src.main
+```
+Then choose option `2` and enter a search term, e.g. `bebedouro automatico gatos`.
+
+### Limitations of this phase
+
+- No automatic Opportunity Score is computed from Mercado Livre results —
+  this phase only proves safe retrieval, validation, mapping, and display.
+- Only fields actually present in the API response are shown; anything
+  Mercado Livre doesn't return for an item is simply omitted, never
+  guessed.
+- The free-text `q` search used here is **experimental and undocumented**
+  for this endpoint — see "Documentation status" above. Do not treat it
+  as a stable contract.
+- Live calls in this environment currently return `403 Forbidden`
+  without a token; this has not been re-tested with a valid token or from
+  a different network (see `docs/MAINTENANCE.md`).
+- `available_quantity`, when returned, is a rounded reference bucket, not
+  exact stock — see above.
+
 ## Architecture direction
 
 The system is designed to grow into an orchestrator coordinating
@@ -175,8 +295,8 @@ root, so `src` resolves as a package whether you run `pytest` or
 1. Project structure
 2. Data models
 3. Opportunity scoring engine
-4. Manual product input *(current phase)*
-5. First real data integration
+4. Manual product input
+5. First real data integration *(current phase)*
 6. Demand analysis
 7. Competition analysis
 8. Margin analysis

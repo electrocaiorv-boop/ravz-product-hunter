@@ -505,3 +505,431 @@ dependência simples."
 - Um **application entry point** bem definido (`main()` +
   `if __name__ == "__main__":`) deixa claro qual é o "botão de ligar" do
   programa, separando-o dos módulos que são apenas bibliotecas internas.
+
+---
+
+## Fase 3 — Integração real com a API do Mercado Livre
+
+> **Correção pós-publicação (verificação independente da documentação
+> oficial):** a primeira versão desta seção afirmava que a busca livre
+> por texto (`q`) em `/sites/MLB/search` era "o endpoint atualmente
+> documentado para busca de itens por texto" e que a autenticação era
+> "opcional segundo a documentação oficial". As duas afirmações estavam
+> **incorretas** e foram corrigidas abaixo depois de reler a
+> documentação oficial atual ("Itens e Buscas", atualizada pelo Mercado
+> Livre em 31/08/2026). O endpoint `/sites/{SITE_ID}/search` documenta
+> oficialmente apenas busca por `nickname` e `seller_id`, com
+> `Authorization: Bearer ACCESS_TOKEN` em todos os exemplos. O parâmetro
+> `q` pertence oficialmente a um endpoint diferente (`/products/search`,
+> de catálogo/GTIN), não a este. Por isso, o uso de `q` neste projeto é
+> classificado como **experimental / não documentado oficialmente**, não
+> como um contrato garantido. O campo `available_quantity` também foi
+> reclassificado: ele é um **valor de referência em faixas** (bucket), e
+> não o estoque exato.
+
+### 1. Nome da fase
+
+**Fase 3: primeira integração externa real (REST API do Mercado Livre)
+e camada de manutenção para dependências externas.**
+
+### 2. Explicação simples
+
+Até agora, nosso programa só sabia conversar com a pessoa que está
+digitando no teclado. Nesta fase, ensinamos o programa a conversar com
+**outro sistema, de outra empresa, do outro lado da internet**: o
+Mercado Livre.
+
+Pense numa API como um **garçom em um restaurante**. Você (nosso
+programa) não entra na cozinha do Mercado Livre para pegar os dados
+você mesmo — você chama o garçom, faz um pedido num formato que o
+restaurante entende ("eu queria uma busca pelo termo 'bebedouro
+automático para gatos', por favor"), e o garçom volta com um prato
+pronto: uma lista de produtos, já organizada. Esse "pedido e resposta"
+entre o nosso programa e o Mercado Livre é exatamente o que chamamos de
+**request** (pedido) e **response** (resposta).
+
+A resposta vem em um formato de texto chamado **JSON** — como um cardápio
+escrito de um jeito bem organizado, com chaves e valores, fácil de um
+programa ler. E junto com a resposta, o garçom também diz um "código":
+"200" significa "aqui está, tudo certo"; "404" significa "não achei isso
+no menu"; "403" significa "não posso te servir isso agora"; "500"
+significa "a cozinha quebrou". Isso é o **status code**.
+
+E se o garçom demorar demais para voltar, ou se o restaurante estiver
+fechado, nosso programa não pode simplesmente travar e mostrar uma tela
+de erro feia para quem está usando — ele precisa dizer, com calma,
+"não consegui buscar agora, tente de novo depois". Isso é o que
+chamamos de **tratamento de erros** (error handling).
+
+Por fim, aprendemos uma lição importante: **o restaurante pode mudar o
+cardápio sem nos avisar**. O Mercado Livre pode, em qualquer momento,
+trocar como a busca funciona, exigir uma senha nova, ou simplesmente
+bloquear esse tipo de pedido. Por isso criamos um checklist de
+manutenção — para revisitar essa conversa com o Mercado Livre
+periodicamente e perceber rápido se algo mudou do lado de fora, antes
+que isso quebre nosso sistema sem avisar.
+
+De fato, isso aconteceu bem na nossa cara durante esta fase: quando
+testamos a busca de verdade (sem nenhuma senha/token configurado), o
+Mercado Livre respondeu com "403 Forbidden" — ou seja, o "garçom" nos
+recusou o pedido. Isso não significa que nosso código está errado:
+pode significar que o restaurante exige uma "credencial" (token) que a
+gente não apresentou (já que a documentação oficial mostra token em
+todos os exemplos desse tipo de pedido), que ele está bloqueando esse
+tipo de pedido vindo do nosso endereço de rede, ou os dois ao mesmo
+tempo — ainda não sabemos qual, e documentamos isso honestamente em vez
+de inventar uma causa só. De qualquer forma, o nosso programa tratou
+isso certinho: não travou, só avisou com uma mensagem clara.
+
+### 3. Explicação técnica
+
+Implementamos a primeira **REST API integration** do projeto, isolada em
+`src/integrations/mercadolivre.py` — a única camada do sistema com
+permissão para conhecer **HTTP**, **JSON** ou a API do Mercado Livre
+(**separation of concerns** / **integration layer**).
+
+- **Endpoint** chamado: `GET https://api.mercadolibre.com/sites/MLB/search?q=...`.
+  `MLB` é o `site_id` do Mercado Livre Brasil. **Importante (corrigido):**
+  a documentação oficial atual ("Itens e Buscas", atualizada em
+  31/08/2026) documenta `/sites/{SITE_ID}/search` **apenas** para busca
+  por `nickname` ou `seller_id` — o parâmetro `q` usado aqui **não** faz
+  parte desse contrato documentado. O `q` oficialmente documentado
+  pertence ao endpoint separado `/products/search` (catálogo/GTIN), que
+  este projeto não usa. Por isso classificamos esse uso de `q` como
+  **experimental / não documentado oficialmente**, não como "o endpoint
+  atual para busca por texto" (como uma versão anterior deste documento
+  afirmava incorretamente).
+- **HTTP** e **GET request**: usamos a biblioteca `requests` para enviar
+  uma requisição `GET` com parâmetros de query (`q`, `limit`) e um
+  **timeout** explícito (`DEFAULT_TIMEOUT = 10` segundos), para nunca
+  deixar o programa esperando indefinidamente.
+- **Status code**: verificamos explicitamente o código HTTP da
+  **response**. `200` é tratado como sucesso; qualquer outro código
+  (`403`, `404`, `429`, `500`, etc.) levanta uma exceção customizada
+  (`MercadoLivreResponseError`) com o código e uma mensagem clara, em vez
+  de deixar o programa continuar com dados inválidos.
+- **JSON parsing**: a resposta é decodificada com `response.json()`
+  dentro de um `try/except` — se vier um JSON malformado, levantamos
+  `MercadoLivreDataError` em vez de deixar o `ValueError` do Python
+  "estourar" sem contexto.
+- **Error handling / custom exceptions**: criamos uma hierarquia própria
+  de exceções (`MercadoLivreError` como base, e
+  `MercadoLivreTimeoutError`, `MercadoLivreConnectionError`,
+  `MercadoLivreResponseError`, `MercadoLivreDataError` como casos
+  específicos), para que o resto do sistema (`src/main.py`) só precise
+  capturar `MercadoLivreError` uma vez, sem conhecer detalhes de
+  `requests` ou de HTTP.
+- **Data mapping**: a resposta crua (`dict` vindo do `response.json()`,
+  o que chamamos de **raw API response**) é convertida por `_map_item()`
+  em um **data model** interno e tipado, `MercadoLivreItem`
+  (`@dataclass`) — deliberadamente separado dos modelos de negócio da
+  Fase 1 (`Product`, `ComponentScores`, `OpportunityResult`). Campos não
+  presentes na resposta da API ficam como `None`, nunca são inventados
+  (regra do `CLAUDE.md`: nunca fabricar dados).
+- **Authentication (corrigido):** a versão anterior deste documento
+  dizia que a documentação oficial descrevia esse endpoint como
+  "utilizável sem token". Isso estava errado. A documentação oficial
+  atual mostra `Authorization: Bearer ACCESS_TOKEN` em **todos** os
+  exemplos de `/sites/{SITE_ID}/search` (para `nickname` e
+  `seller_id`) — ou seja, a autenticação deve ser tratada como
+  **esperada** para essa família de endpoint, mesmo que isso não esteja
+  confirmado especificamente para o uso (não documentado) de `q` feito
+  aqui. Na implementação, se a variável de ambiente
+  `MERCADO_LIVRE_ACCESS_TOKEN` estiver definida, ela é enviada como
+  cabeçalho `Authorization: Bearer <token>` (**bearer token**); se não
+  estiver, a requisição segue sem esse cabeçalho (e é mais provável que
+  falhe). O token nunca é escrito no código — apenas o nome da variável
+  aparece em `.env.example` (**environment variable**).
+- **API lifecycle / deprecation**: durante a pesquisa da documentação
+  oficial e de relatos de outros desenvolvedores, descobrimos que esse
+  mesmo endpoint vem apresentando bloqueios (`403`) para vários
+  integradores desde 2024, mesmo com token válido — um sinal de que o
+  Mercado Livre pode estar restringindo o acesso de terceiros à busca
+  genérica. Isso é **API deprecation/lifecycle awareness**: APIs externas
+  mudam de comportamento com o tempo, independente do nosso código.
+- **Mock**: todos os testes usam um `requests.get` falso
+  (`monkeypatch.setattr(mercadolivre.requests, "get", fake_get)`), para
+  simular sucesso, timeout, falha de conexão, cada status code de erro,
+  JSON inválido e resposta sem o campo `results` — sem nunca chamar a
+  API de verdade durante os testes automatizados.
+- **Dependency management**: adicionamos `requests>=2.31` ao
+  `requirements.txt`, documentando por que ela é necessária (é o cliente
+  HTTP real usado pela integração).
+- **Maintenance**: criamos `docs/MAINTENANCE.md`, um checklist (não
+  automatizado) para revisar periodicamente se o endpoint, a
+  autenticação, os campos da resposta e as dependências ainda estão
+  válidos.
+- **`available_quantity` não é estoque exato (corrigido)**: a
+  documentação oficial descreve esse campo como um **valor de
+  referência em faixas** — um estoque real dentro de uma faixa é
+  arredondado para o piso daquela faixa antes de ser publicado (ex.:
+  estoque real entre 51 e 100 é devolvido como o valor de referência
+  `50`). O modelo `MercadoLivreItem` e a exibição no CLI foram
+  atualizados para deixar isso explícito, em vez de sugerir que é a
+  quantidade exata em estoque.
+
+### 4. Conexão entre o simples e o técnico
+
+O "garçom entre nosso programa e o restaurante Mercado Livre" é,
+tecnicamente, a **API** — mais especificamente, uma **REST API** que se
+comunica via **HTTP**. O "pedido" que fazemos é o **GET request**
+(`requests.get(...)`), e o "prato que volta" é a **response**, cujo
+conteúdo vem em **JSON**. O "código que o garçom diz" (200, 403, 404,
+500...) é o **status code**, verificado explicitamente no código. "O
+garçom recusar o pedido" é exatamente o que vimos na prática: um `403`
+tratado por `MercadoLivreResponseError`, sem travar o programa — isso é
+**error handling**. "Traduzir o prato para o nosso jeito de organizar a
+cozinha" é o **data mapping**: transformar o `dict` bruto da API
+(**raw API response**) no nosso próprio modelo (`MercadoLivreItem`). E
+"o restaurante pode mudar o cardápio sem avisar" é a razão de existir o
+**MAINTENANCE.md**: **dependency management** e **API lifecycle
+management** na prática, porque sistemas externos mudam de forma
+independente do nosso projeto.
+
+### 5. O que implementamos na prática
+
+- `src/integrations/__init__.py` e `src/integrations/mercadolivre.py`:
+  - `search_products(query, limit=10, timeout=10)` — função pública
+    única, não expõe detalhes de HTTP para o resto do sistema.
+  - `MercadoLivreItem` — `@dataclass` com os campos realmente
+    disponíveis na resposta (`item_id`, `title`, `price`, `currency_id`,
+    `seller_id`, `category_id`, `condition`, `permalink`,
+    `free_shipping`, `available_quantity`).
+  - `_map_item()` — mapeamento explícito do JSON bruto para
+    `MercadoLivreItem`.
+  - Hierarquia de exceções: `MercadoLivreError`,
+    `MercadoLivreTimeoutError`, `MercadoLivreConnectionError`,
+    `MercadoLivreResponseError` (com `status_code`),
+    `MercadoLivreDataError`.
+  - Suporte opcional a `MERCADO_LIVRE_ACCESS_TOKEN` via variável de
+    ambiente.
+- `src/main.py` atualizado com um menu principal:
+  ```
+  1. Manual Product Analyzer
+  2. Search Mercado Livre
+  ```
+  mantendo 100% do comportamento da Fase 2 (`run_manual_analyzer`), e
+  adicionando `run_mercado_livre_search()` e `format_search_results()`
+  para a nova opção.
+- `tests/test_mercadolivre_integration.py` — 14 testes novos cobrindo
+  sucesso, campos ausentes, resultado vazio, timeout, falha de conexão,
+  cada status code de erro, JSON malformado, campo `results` ausente, e
+  validação de `query`/`limit`.
+- `tests/test_main.py` ampliado com testes para o novo menu e para a
+  exibição dos resultados de busca.
+- `requirements.txt` — adicionado `requests>=2.31`.
+- `.env.example` — adicionada a variável `MERCADO_LIVRE_ACCESS_TOKEN`
+  (sem valor).
+- `README.md` — nova seção "Phase 3 scope" com endpoint, autenticação,
+  comando de execução e a limitação encontrada na validação manual.
+- `docs/MAINTENANCE.md` — novo checklist de manutenção semanal.
+
+### 6. Termos técnicos aprendidos
+
+- **termo:** API (Application Programming Interface)
+  **definição:** um conjunto de regras que permite que um programa peça
+  dados ou ações a outro sistema, sem precisar saber como esse sistema
+  funciona por dentro.
+  **como apareceu no projeto:** a API pública do Mercado Livre, acessada
+  em `api.mercadolibre.com`.
+
+- **termo:** REST API
+  **definição:** um estilo de API que usa URLs para representar recursos
+  (ex.: "um item de busca") e verbos HTTP (GET, POST...) para agir sobre
+  eles.
+  **como apareceu no projeto:** `GET /sites/MLB/search?q=...` é um
+  recurso REST: "busca no site MLB".
+
+- **termo:** HTTP
+  **definição:** o protocolo (conjunto de regras de comunicação) usado
+  pela internet para pedir e receber recursos, incluindo páginas web e
+  respostas de API.
+  **como apareceu no projeto:** toda a comunicação com o Mercado Livre
+  acontece sobre HTTP, via `requests.get(...)`.
+
+- **termo:** GET request
+  **definição:** um tipo de requisição HTTP usada para *pedir* dados sem
+  alterá-los no servidor.
+  **como apareceu no projeto:** `search_products()` faz um `GET` para
+  buscar itens, sem criar nem modificar nada no Mercado Livre.
+
+- **termo:** Endpoint
+  **definição:** o caminho específico de uma API que representa um
+  recurso ou uma ação (ex.: "/sites/MLB/search").
+  **como apareceu no projeto:** `BASE_URL + "/sites/MLB/search"`.
+
+- **termo:** Request / Response
+  **definição:** a dupla pedido (o que enviamos) e resposta (o que
+  recebemos de volta) que forma toda comunicação HTTP.
+  **como apareceu no projeto:** `requests.get(...)` envia o request;
+  o objeto retornado é a response, de onde lemos `.status_code` e
+  `.json()`.
+
+- **termo:** Status code
+  **definição:** um número de três dígitos que resume o resultado de uma
+  requisição HTTP (ex.: 200 = sucesso, 403 = proibido, 404 = não
+  encontrado, 500 = erro no servidor).
+  **como apareceu no projeto:** verificado explicitamente em
+  `search_products()`; um `403` real foi observado na validação manual
+  desta fase.
+
+- **termo:** JSON (JavaScript Object Notation)
+  **definição:** um formato de texto estruturado, baseado em chave e
+  valor, usado para trocar dados entre sistemas diferentes.
+  **como apareceu no projeto:** a resposta da API do Mercado Livre e sua
+  leitura via `response.json()`.
+
+- **termo:** Timeout
+  **definição:** um limite de tempo máximo que esperamos por uma resposta
+  antes de desistir e tratar como falha.
+  **como apareceu no projeto:** `timeout=10` passado para
+  `requests.get()`; estourar esse limite levanta
+  `MercadoLivreTimeoutError`.
+
+- **termo:** Error handling (tratamento de erros)
+  **definição:** capturar e responder a falhas de forma controlada, em
+  vez de deixar o programa travar com uma exceção não tratada.
+  **como apareceu no projeto:** cada tipo de falha (timeout, conexão,
+  status code de erro, JSON inválido) é capturado e transformado em uma
+  exceção customizada com mensagem clara.
+
+- **termo:** Data mapping (mapeamento de dados)
+  **definição:** transformar dados de um formato/estrutura (geralmente
+  externo) para outro formato controlado pela nossa aplicação.
+  **como apareceu no projeto:** `_map_item()` transforma o `dict` bruto
+  da API em `MercadoLivreItem`.
+
+- **termo:** Integration layer (camada de integração)
+  **definição:** um módulo dedicado que isola todo o conhecimento sobre
+  um sistema externo, para que o resto da aplicação não precise saber
+  como esse sistema funciona.
+  **como apareceu no projeto:** `src/integrations/mercadolivre.py` é a
+  única parte do projeto que importa `requests` ou conhece a forma do
+  JSON do Mercado Livre.
+
+- **termo:** External dependency (dependência externa)
+  **definição:** qualquer biblioteca ou serviço de fora do nosso próprio
+  código do qual o projeto depende para funcionar.
+  **como apareceu no projeto:** a biblioteca `requests` e a própria API
+  do Mercado Livre.
+
+- **termo:** Mock
+  **definição:** uma versão falsa e controlada de uma dependência (como
+  uma chamada de rede), usada em testes para simular comportamentos sem
+  depender do sistema real.
+  **como apareceu no projeto:** `monkeypatch.setattr(mercadolivre.requests, "get", fake_get)`
+  substitui a chamada HTTP real por uma função que devolve respostas
+  programadas em cada teste.
+
+- **termo:** Environment variable (variável de ambiente)
+  **definição:** um valor configurado fora do código-fonte (no sistema
+  operacional ou em um arquivo `.env`), usado para configuração e
+  segredos.
+  **como apareceu no projeto:** `MERCADO_LIVRE_ACCESS_TOKEN`, lida com
+  `os.environ.get(...)`, nunca escrita diretamente no código.
+
+- **termo:** Authentication (autenticação)
+  **definição:** o processo de provar, para um sistema, quem está
+  fazendo a requisição — geralmente por meio de uma credencial.
+  **como apareceu no projeto:** a documentação oficial atual mostra
+  token em todos os exemplos de `/sites/{SITE_ID}/search`, então
+  tratamos a autenticação como **esperada** para esse endpoint (não como
+  "opcional segundo a documentação", correção em relação à versão
+  anterior deste texto); no código, o cabeçalho é enviado apenas se um
+  token estiver configurado, mas a chamada continua sem travar mesmo sem
+  um.
+
+- **termo:** Bearer token
+  **definição:** um tipo de credencial enviada no cabeçalho HTTP
+  `Authorization: Bearer <token>`, usada para provar que a requisição
+  está autorizada.
+  **como apareceu no projeto:** enviado apenas se
+  `MERCADO_LIVRE_ACCESS_TOKEN` estiver definida no ambiente.
+
+- **termo:** Reference quantity / bucketed data (dado em faixas)
+  **definição:** quando uma API publica um valor aproximado dentro de
+  uma faixa, em vez do valor exato, geralmente por motivos de
+  privacidade competitiva ou de negócio.
+  **como apareceu no projeto:** o campo `available_quantity` do Mercado
+  Livre não é o estoque exato — um estoque real de 51-100 unidades é
+  devolvido como o valor de referência `50`. Isso foi descoberto durante
+  a verificação da documentação oficial e corrigido na modelagem
+  (`MercadoLivreItem`) e na exibição do CLI.
+
+- **termo:** API deprecation (descontinuação de API)
+  **definição:** quando um endpoint ou recurso de uma API para de
+  funcionar ou tem seu acesso restringido, geralmente após um aviso
+  (nem sempre).
+  **como apareceu no projeto:** relatos de terceiros sobre restrições
+  crescentes nesse mesmo endpoint desde 2024, e o `403` observado durante
+  a validação manual desta fase.
+
+- **termo:** Dependency management (gestão de dependências)
+  **definição:** acompanhar, documentar e manter atualizadas as
+  bibliotecas externas que o projeto usa.
+  **como apareceu no projeto:** `requirements.txt` atualizado com
+  `requests>=2.31`, e o checklist de `docs/MAINTENANCE.md` que inclui
+  verificar essa dependência periodicamente.
+
+- **termo:** API lifecycle management / maintenance (gestão de ciclo de
+  vida de API / manutenção)
+  **definição:** o processo contínuo de monitorar se uma integração
+  externa continua funcionando como esperado, já que o sistema do outro
+  lado pode mudar sem aviso.
+  **como apareceu no projeto:** `docs/MAINTENANCE.md`, com um checklist
+  semanal e uma cadência recomendada.
+
+### 7. Comandos/ferramentas usados
+
+```bash
+python -m src.main                 # executar a CLI (opção 2 = busca)
+python -m pytest -v                # rodar todos os testes via módulo
+pytest -v                          # rodar todos os testes direto
+pip install -r requirements.txt    # instalar requests + pytest
+```
+
+Ferramentas: Python 3.12, `requests`, `pytest`, `monkeypatch` (fixture do
+`pytest` usada para simular HTTP), pesquisa na documentação oficial do
+Mercado Livre.
+
+### 8. Como explicar isso para um recrutador ou cliente
+
+"Eu construí a primeira integração real com uma API externa (Mercado
+Livre) de forma isolada: toda a lógica de HTTP, JSON e tratamento de
+erros vive em um único módulo, então o resto do sistema nunca depende de
+detalhes de implementação de rede. Tratei explicitamente todos os
+cenários de falha esperados — timeout, erro de conexão, respostas de erro
+HTTP, JSON inválido — para que uma instabilidade externa nunca derrube a
+aplicação, apenas gere uma mensagem clara. Testei essa integração
+inteiramente com mocks, sem depender da API real estar no ar durante os
+testes automatizados. E, como parte do processo de engenharia, documentei
+um checklist de manutenção recorrente, porque uma integração com um
+sistema de terceiros não é 'escrever uma vez e esquecer' — ela precisa
+ser revisitada, e eu já identifiquei, na validação manual desta fase, que
+esse endpoint específico está retornando 403 a partir do ambiente onde
+testei, o que já está documentado como um item a investigar."
+
+### 9. O que devo lembrar desta fase
+
+- Uma integração externa deve morar em **um único módulo isolado**
+  (`src/integrations/mercadolivre.py`) — nenhum outro arquivo do projeto
+  deve importar `requests` ou conhecer o formato do JSON da API.
+- **Toda chamada de rede pode falhar de várias formas diferentes**
+  (timeout, conexão, status code, JSON malformado) — cada uma merece um
+  tratamento específico e uma mensagem clara, nunca um traceback cru para
+  quem está usando o programa.
+- **Nunca fabricar dados**: se um campo não vier na resposta da API, ele
+  fica como `None` no nosso modelo — não inventamos um valor plausível.
+- **Testar integrações externas com mocks**, nunca com chamadas reais nos
+  testes automatizados — isso mantém os testes rápidos, determinísticos e
+  independentes da disponibilidade do serviço externo.
+- **Sistemas externos mudam sem avisar.** Documentar isso em um
+  checklist de manutenção (`docs/MAINTENANCE.md`) não é burocracia — é o
+  que evita ser pego de surpresa quando o Mercado Livre mudar algo, e já
+  se mostrou necessário nesta própria fase, com o `403` observado na
+  validação manual.
+- Antes de confiar ou documentar o comportamento de uma API, **verificar
+  a documentação oficial atual**, em vez de assumir como ela funciona —
+  e, quando a documentação e o comportamento real divergem (como
+  aconteceu aqui), documentar os dois lados honestamente, em vez de
+  fingir que um deles não existe.
