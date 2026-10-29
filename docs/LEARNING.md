@@ -1268,3 +1268,85 @@ recalibrado quando tivermos dados de vendas reais."
   confiabilidade degradada desde 2026-07-30) é o que torna esse risco
   gerenciável -- ele fica visível e revisável, em vez de escondido
   dentro do código.
+
+### Adendo — Bug real em produção após o commit da Fase 4
+
+Depois de a Fase 4 já estar commitada, uma execução real da CLI com
+`bebedouro para gatos` devolveu buscas relacionadas, buscas em alta e
+interesse regional normalmente, mas `interest_over_time` foi mapeado
+para **zero observações**, sem nenhum erro aparecer. Isso contradizia a
+validação anterior, que tinha visto 53 pontos para o mesmo tipo de
+consulta.
+
+**O que é "schema drift" (desvio de schema):** é quando uma API ou um
+serviço externo muda, com o tempo, o formato dos dados que devolve --
+um campo que renomeia, um valor que passa a vir embrulhado de um jeito
+diferente -- sem necessariamente avisar ou documentar a mudança. É
+diferente de um "bug" no sentido tradicional: o fornecedor não quebrou
+nada do lado dele (ou pode nem ter mudado nada), mas o **formato**
+mudou (ou varia) de um jeito que nosso código não esperava.
+
+**O que eu descobri ao investigar:** tentei reproduzir o problema com
+chamadas reais, novas, para a mesma consulta -- quatro vezes seguidas.
+Em todas as quatro, a Apify devolveu o formato esperado (`date`,
+`value`, `formatted_value`) com dados reais e corretos. Ou seja, **não
+consegui reproduzir um formato permanentemente diferente**. A conclusão
+mais honesta, baseada em evidência (e não em suposição), é
+**inconsistência do Actor** (`actor inconsistency`): como o
+Actor já tem um risco documentado de confiabilidade degradada desde
+2026-07-30 por limitação de taxa do Google, é plausível que, numa
+chamada específica, só a parte de `interest_over_time` tenha falhado
+silenciosamente (talvez um valor em um formato que meu código não
+soubesse interpretar), enquanto as outras partes (`related_queries`,
+`interest_by_region`) funcionaram. Até reproduzi essa "inconsistência
+entre seções" de novo durante a correção: numa chamada, `interest_over_time`
+veio completo e `related_queries` veio vazio -- o mesmo Actor, a mesma
+consulta, resultado diferente.
+
+**Por que mocks não substituem testes de integração ao vivo:** todos os
+nossos testes com `requests.post` mockado continuavam passando 100%
+durante esse incidente -- porque um mock só testa "o código reage
+corretamente ao formato que EU disse que ele receberia". Ele nunca pode
+nos avisar que o fornecedor começou a mandar um formato diferente (ou
+inconsistente) na vida real. É exatamente por isso que o
+`CLAUDE.md` e esta prática de engenharia pedem validação manual com a
+API de verdade em cada fase -- os mocks garantem que a lógica interna
+está certa; só uma chamada real garante que a suposição sobre o formato
+externo continua válida.
+
+**A correção aplicada (hotfix):** mesmo sem conseguir reproduzir o
+formato quebrado, fiz duas mudanças defensivas em
+`src/integrations/apify_trends.py`:
+1. `_coerce_interest_value()` passou a aceitar um formato real e
+   documentado do Google Trends em que o valor de um ponto vem como uma
+   lista de um elemento (`[36]`) em vez de um número simples (`36`) --
+   isso acontece quando o Google compara múltiplos termos ao mesmo
+   tempo, e o Actor pode nem sempre "desembrulhar" isso para nós.
+2. Mais importante: `_map_report_row()` agora **levanta um erro claro**
+   (`ApifyTrendsDataError`) se `interest_over_time` chegar com pontos,
+   mas **nenhum** deles tiver um valor que conseguimos interpretar como
+   número -- em vez de silenciosamente devolver "zero observações" sem
+   avisar nada. O bug real não era "não ter dados" (que já tratávamos
+   bem) -- era "ter dados, mas falhar ao interpretar, e ninguém ficar
+   sabendo disso".
+
+**Teste de regressão (`regression test`):** adicionamos dois testes em
+`tests/test_apify_trends_integration.py` usando um formato reduzido e
+sanitizado (só os campos necessários para o mapeamento, sem nenhum dado
+sensível): um simula o valor-em-lista (`[36]`) e confirma que agora é
+interpretado corretamente; o outro simula pontos presentes mas
+impossíveis de interpretar, e confirma que agora isso levanta
+`ApifyTrendsDataError` em vez de devolver silenciosamente zero
+observações. Um teste de regressão existe exatamente para isso: "se
+esse bug específico voltar a acontecer, um teste automatizado vai
+quebrar e avisar, em vez de passar escondido".
+
+**Bug de produção / hotfix:** esse incidente é um exemplo real de
+**production bug** (um problema descoberto depois do código já estar
+em uso/commitado, não durante o desenvolvimento) e de **hotfix** (uma
+correção direcionada, aplicada rapidamente, focada em resolver o
+sintoma relatado com segurança -- sem reescrever a arquitetura). A
+camada de integração continua isolada (`trend_analysis.py` não mudou
+nada), o que confirma, na prática, por que separar a fonte de dados da
+lógica de análise valeu a pena: a correção ficou inteiramente contida
+em um único arquivo.

@@ -57,6 +57,43 @@ SUMMARY_ROW = {"_type": "summary", "totalKeywords": 1}
 INFO_ROW = {"_type": "info", "message": "run complete"}
 ERROR_ROW = {"_type": "error", "errorMessage": "Google Trends blocked this request"}
 
+# Regression fixture for the Phase 4 production incident: a live run
+# returned related/rising queries and regional interest successfully,
+# but interest_over_time mapped to zero observations with no error.
+# This reduced, sanitized shape models the one concrete, real Google
+# Trends raw-API quirk that could cause exactly that: a point's "value"
+# arriving as a one-element list (the shape Google's own multiline
+# timeseries endpoint uses when comparing multiple keywords) instead of
+# a plain scalar.
+REPORT_ROW_WITH_LIST_WRAPPED_VALUES = {
+    "keyword": "bebedouro para gatos",
+    "geo": "BR",
+    "timeframe": "today 12-m",
+    "scraped_at": "2026-10-29T12:00:00Z",
+    "interest_over_time": [
+        {"date": "2026-01-01", "value": [36], "formatted_value": ["36"]},
+        {"date": "2026-01-08", "value": [57], "formatted_value": ["57"]},
+    ],
+    "interest_by_region": [],
+    "related_queries": {"top": [], "rising": []},
+}
+
+# A genuinely broken shape: points are present, but none carry a value
+# we can parse into a number. This must raise loudly, not silently
+# report zero observations -- that silent-zero behavior was the bug.
+REPORT_ROW_WITH_UNPARSEABLE_VALUES = {
+    "keyword": "bebedouro para gatos",
+    "geo": "BR",
+    "timeframe": "today 12-m",
+    "scraped_at": "2026-10-29T12:00:00Z",
+    "interest_over_time": [
+        {"date": "2026-01-01", "value": None, "formatted_value": None},
+        {"date": "2026-01-08", "value": {}, "formatted_value": None},
+    ],
+    "interest_by_region": [],
+    "related_queries": {"top": [], "rising": []},
+}
+
 
 class FakeResponse:
     def __init__(self, status_code=200, json_data=None, json_error=None):
@@ -132,6 +169,34 @@ def test_fetch_trend_data_accepts_201_as_success(monkeypatch):
 
     data = fetch_trend_data("bebedouro automatico gatos")
     assert data.query == "bebedouro automatico gatos"
+
+
+def test_fetch_trend_data_unwraps_list_wrapped_interest_values(monkeypatch):
+    """Regression test for the Phase 4 production incident (reduced/sanitized shape)."""
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        return FakeResponse(status_code=201, json_data=[REPORT_ROW_WITH_LIST_WRAPPED_VALUES])
+
+    monkeypatch.setattr(apify_trends.requests, "post", fake_post)
+
+    data = fetch_trend_data("bebedouro para gatos")
+
+    assert len(data.interest_over_time) == 2
+    assert data.interest_over_time[0].value == 36
+    assert data.interest_over_time[1].value == 57
+
+
+def test_fetch_trend_data_raises_instead_of_silent_zero_observations(monkeypatch):
+    """Regression test: non-empty interest_over_time that fails to parse must
+    raise ApifyTrendsDataError, never silently report zero observations."""
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        return FakeResponse(status_code=201, json_data=[REPORT_ROW_WITH_UNPARSEABLE_VALUES])
+
+    monkeypatch.setattr(apify_trends.requests, "post", fake_post)
+
+    with pytest.raises(ApifyTrendsDataError):
+        fetch_trend_data("bebedouro para gatos")
 
 
 def test_fetch_trend_data_raises_on_actor_error_row(monkeypatch):

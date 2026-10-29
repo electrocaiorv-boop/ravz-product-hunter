@@ -29,10 +29,16 @@ that belongs to a later phase (see `CLAUDE.md` roadmap).
 - [ ] Actor last update date checked
 - [ ] Actor pricing checked
 - [ ] Actor output schema checked (field names/shape unchanged)
+- [ ] Actor output checked for PER-SECTION consistency (not just overall
+      success) — confirm `interest_over_time`, `interest_by_region`,
+      and `related_queries` are ALL non-trivially populated in the same
+      run; a run can return `HTTP 2xx` with some sections correct and
+      others empty/malformed (see 2026-10-29 incident below)
 - [ ] Actor rate-limit/degradation notices checked
 - [ ] Google Trends' own behavior/access changes checked
 - [ ] `APIFY_API_TOKEN` validity checked (without printing/logging it)
-- [ ] Live smoke test run (`bebedouro para gatos`, geo `BR`)
+- [ ] Live smoke test run (`bebedouro para gatos`, geo `BR`), run at
+      least twice back-to-back to catch intermittent per-section failures
 - [ ] `requests`, `python-dotenv` dependency versions checked
 
 ### Shared
@@ -135,6 +141,24 @@ official documentation. This section reflects the corrected findings.
   failure. The broader query `bebedouro para gatos` returned rich,
   varied data (53 points, 12 top + 2 rising related queries, 27
   regions).
+- **Incident (2026-10-29) — per-section inconsistency, not a
+  deterministic schema change:** a live CLI run for `bebedouro para
+  gatos` returned `related_queries` and `interest_by_region`
+  successfully but mapped `interest_over_time` to zero observations
+  with no error. Four immediate follow-up live calls all returned the
+  expected `interest_over_time` shape correctly — one later call
+  returned `interest_over_time` correctly but `related_queries` empty.
+  **Conclusion: the Actor is internally inconsistent across sections
+  within a single run**, not a one-time schema migration. Treat this as
+  ongoing, not resolved — a single "it worked" smoke test is not
+  sufficient evidence the Actor is healthy; check per-section
+  consistency as its own checklist item (added above). Hardened in
+  `src/integrations/apify_trends.py`: a list-wrapped interest value
+  (`[36]` instead of `36`, a known real Google Trends raw-API shape) is
+  now unwrapped automatically; and non-empty `interest_over_time` that
+  fails to parse into any numeric value now raises
+  `ApifyTrendsDataError` instead of silently reporting zero
+  observations.
 
 ## How to perform the check
 

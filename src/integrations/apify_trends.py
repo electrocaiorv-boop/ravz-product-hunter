@@ -28,6 +28,23 @@ Observed live: this endpoint returns `HTTP 201 Created` on success (not
 `200`), presumably because the call provisions a new Actor run resource.
 Any `2xx` status is treated as success here.
 
+PRODUCTION HOTFIX (post-commit): a live CLI run returned related
+queries, rising queries, and regional interest successfully, but mapped
+`interest_over_time` to zero observations -- with no error shown. A
+fresh live re-test could not reproduce a broken raw shape (4 consecutive
+calls all returned the expected `{"date", "value", "formatted_value"}`
+points), so this is classified as intermittent Actor inconsistency, not
+a confirmed permanent schema change (see docs/MAINTENANCE.md). Two
+defenses were added regardless: `_coerce_interest_value()` tolerates a
+known real Google Trends raw-API quirk (a point's `value` arriving as a
+one-element list instead of a scalar, used when comparing multiple
+keywords), and `_map_report_row()` now RAISES `ApifyTrendsDataError`
+if the Actor returned interest_over_time entries that all failed to
+parse into a number, instead of silently returning zero observations.
+Silent zero-with-no-error was the real bug; genuinely empty/missing
+`interest_over_time` (an honest "no data") still returns an empty list
+without raising.
+
 Authentication: `Authorization: Bearer <APIFY_API_TOKEN>` header (never
 a query parameter, and never hardcoded). The token is loaded from the
 environment via `src.config` (which loads `.env` through python-dotenv).
@@ -99,10 +116,38 @@ def _build_headers() -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _coerce_interest_value(value):
+    """Coerce a raw interest value into a number.
+
+    Google Trends' own underlying API represents a timeseries point's
+    value as a list (one entry per compared keyword) when comparing
+    multiple keywords, e.g. `[36]` instead of `36` for a single keyword.
+    The Actor is expected to flatten this, but has been observed to be
+    unreliable (see docs/MAINTENANCE.md) -- so a single-element list is
+    unwrapped defensively here rather than assumed away. Anything else
+    unrecognized becomes None; nothing is ever guessed or fabricated.
+    """
+    if isinstance(value, list):
+        value = value[0] if len(value) == 1 else None
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            try:
+                return float(value)
+            except ValueError:
+                return None
+    return None
+
+
 def _map_point(raw: dict) -> TrendPoint:
     return TrendPoint(
         date=raw.get("date"),
-        value=raw.get("value"),
+        value=_coerce_interest_value(raw.get("value")),
         formatted_value=raw.get("formatted_value"),
     )
 
@@ -126,7 +171,20 @@ def _map_related_query(raw: dict) -> RelatedQuery:
 
 def _map_report_row(raw: dict, query: str, geo: str, timeframe: str) -> TrendData:
     """Map one real Actor report row (never an error/summary/info row) to TrendData."""
-    interest_over_time = [_map_point(p) for p in (raw.get("interest_over_time") or [])]
+    raw_points = raw.get("interest_over_time") or []
+    interest_over_time = [_map_point(p) for p in raw_points]
+    if raw_points and all(p.value is None for p in interest_over_time):
+        # The Actor returned interest_over_time entries, but none had a
+        # value we could parse into a number. This is a REAL mapping
+        # failure, not "no data" -- raise loudly instead of silently
+        # returning zero observations (that silent-zero shape is exactly
+        # the bug this check exists to catch; see docs/MAINTENANCE.md).
+        raise ApifyTrendsDataError(
+            "Actor returned interest_over_time entries but none had a "
+            "recognizable numeric value -- possible schema drift or "
+            "Actor inconsistency in the point shape."
+        )
+
     interest_by_region = [_map_region(r) for r in (raw.get("interest_by_region") or [])]
 
     related = raw.get("related_queries") or {}
