@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import pytest
 
 from src.competition_analysis import analyze_competition
@@ -13,18 +15,26 @@ from src.main import (
     collect_scores,
     format_competition_report,
     format_demand_report,
+    format_margin_report,
     format_report,
     format_search_results,
     format_trend_report,
     parse_menu_choice,
     parse_non_empty_text,
+    parse_optional_money,
+    parse_optional_rate,
+    parse_required_non_negative_money,
+    parse_required_positive_money,
     parse_score,
     recommend,
     run_competition_analysis,
     run_demand_analysis,
+    run_margin_analysis,
     run_mercado_livre_search,
     run_trend_analysis,
 )
+from src.margin_analysis import analyze_margin
+from src.margin_models import MarginInputs
 from src.models import ComponentScores, Product
 from src.scoring import score_opportunity
 from src.trend_analysis import analyze_trend
@@ -138,13 +148,62 @@ def test_recommend_handles_unknown_classification():
 def test_parse_menu_choice_accepts_valid_options():
     assert parse_menu_choice("1") == 1
     assert parse_menu_choice("2") == 2
-    assert parse_menu_choice(" 5 ") == 5
+    assert parse_menu_choice(" 6 ") == 6
 
 
-@pytest.mark.parametrize("raw", ["0", "6", "abc", ""])
+@pytest.mark.parametrize("raw", ["0", "7", "abc", ""])
 def test_parse_menu_choice_rejects_invalid_options(raw):
     with pytest.raises(ValueError):
         parse_menu_choice(raw)
+
+
+def test_parse_required_positive_money_valid():
+    assert parse_required_positive_money("100") == Decimal("100")
+    assert parse_required_positive_money(" 99.90 ") == Decimal("99.90")
+
+
+@pytest.mark.parametrize("raw", ["", "0", "-5", "abc"])
+def test_parse_required_positive_money_rejects_invalid(raw):
+    with pytest.raises(ValueError):
+        parse_required_positive_money(raw)
+
+
+def test_parse_required_non_negative_money_allows_zero():
+    assert parse_required_non_negative_money("0") == Decimal("0")
+
+
+@pytest.mark.parametrize("raw", ["", "-1", "abc"])
+def test_parse_required_non_negative_money_rejects_invalid(raw):
+    with pytest.raises(ValueError):
+        parse_required_non_negative_money(raw)
+
+
+def test_parse_optional_money_blank_is_none():
+    assert parse_optional_money("") is None
+    assert parse_optional_money("   ") is None
+
+
+def test_parse_optional_money_valid():
+    assert parse_optional_money("15") == Decimal("15")
+
+
+def test_parse_optional_money_rejects_negative():
+    with pytest.raises(ValueError):
+        parse_optional_money("-1")
+
+
+def test_parse_optional_rate_blank_is_none():
+    assert parse_optional_rate("") is None
+
+
+def test_parse_optional_rate_valid():
+    assert parse_optional_rate("0.12") == Decimal("0.12")
+
+
+@pytest.mark.parametrize("raw", ["1.5", "-0.1", "abc"])
+def test_parse_optional_rate_rejects_invalid(raw):
+    with pytest.raises(ValueError):
+        parse_optional_rate(raw)
 
 
 def test_ask_with_default_returns_default_on_empty_input():
@@ -451,3 +510,59 @@ def test_run_competition_analysis_handles_source_failure_without_crashing(monkey
     assert "marketplace source unavailable" in captured.out
     assert "COMPETITION ANALYSIS REPORT" in captured.out
     assert "not available" in captured.out
+
+
+def _make_margin_inputs(**overrides):
+    base = dict(
+        product_name="Bebedouro",
+        sale_price=Decimal("100"),
+        product_cost=Decimal("50"),
+        marketplace_fee_amount=Decimal("15"),
+        seller_shipping_cost=Decimal("10"),
+    )
+    base.update(overrides)
+    return MarginInputs(**base)
+
+
+def test_format_margin_report_contains_key_sections():
+    inputs = _make_margin_inputs()
+    result = analyze_margin(inputs)
+    report = format_margin_report(inputs, result)
+
+    assert "Bebedouro" in report
+    assert "MARGIN ANALYSIS REPORT" in report
+    assert "PROVISIONAL" in report
+    assert "Gross profit:" in report
+    assert "Gross margin:" in report
+    assert "Markup:" in report
+    assert "Contribution profit (known costs only):" in report
+    assert "Contribution margin (known costs only):" in report
+    assert "Break-even price" in report
+    assert "Margin Score:" in report
+    assert "Cost Completeness Score:" in report
+    assert "Unavailable / unknown costs:" in report
+    assert "NOT net profit" in report
+    assert "NOT fed into the Phase 1 Opportunity Scoring Engine" in report
+
+
+def test_run_margin_analysis_happy_path(capsys):
+    fake_input = make_input(
+        ["Bebedouro", "100", "50", "15", "", "", "10", "", "", "", "", "", "", ""]
+    )
+    run_margin_analysis(fake_input)
+
+    captured = capsys.readouterr()
+    assert "MARGIN ANALYSIS REPORT" in captured.out
+    assert "Gross profit: 50.00" in captured.out
+    assert "Contribution profit (known costs only): 25.00" in captured.out
+
+
+def test_run_margin_analysis_reports_conflicting_inputs_without_crashing(capsys):
+    fake_input = make_input(
+        ["Bebedouro", "100", "50", "10", "0.1", "", "", "", "", "", "", "", "", ""]
+    )
+    run_margin_analysis(fake_input)
+
+    captured = capsys.readouterr()
+    assert "Invalid input" in captured.out
+    assert "MARGIN ANALYSIS REPORT" not in captured.out

@@ -607,6 +607,152 @@ validates Competition Analysis in isolation.
   empirically validated.
 - Neither score has been validated against real outcomes.
 
+## Phase 7 scope
+
+Phase 7 adds a deterministic **Margin Analysis** layer. It answers
+*"after all KNOWN costs, how much money appears to remain from each
+sale?"* — distinct from Demand (market interest) and Competition
+(competitive difficulty). This phase works **without** any Mercado
+Livre access: it is a provider-neutral unit-economics calculator over
+explicit, user-supplied inputs, not a live marketplace lookup.
+
+### Why Decimal, not float
+
+Money uses `decimal.Decimal` throughout, never `float`. Binary floating
+point cannot exactly represent most decimal fractions (`0.1 + 0.2 !=
+0.3` in float), and those tiny errors compound across financial
+calculations in ways that are hard to reproduce and impossible to
+justify to someone reconciling real currency. Every monetary/rate
+input is coerced via `Decimal(str(value))` (never `Decimal(float)`
+directly) to avoid importing a float's binary representation error.
+Rounding uses `ROUND_HALF_UP` to 2 decimal places — a documented policy
+choice (the everyday rounding convention) applied to each individually
+meaningful amount as soon as it's computed, not just once at the very
+end.
+
+### Core concepts, worked example
+
+```
+Sale price = 100        Product cost = 50
+Marketplace fee = 15    Shipping = 10
+
+Gross profit        = 100 - 50 = 50
+Gross margin        = 50 / 100 = 50%
+Markup               = 50 / 50  = 100%        <- NOT the same as margin
+Contribution profit  = 100 - 50 - 15 - 10 = 25
+Contribution margin  = 25 / 100 = 25%
+```
+
+**Margin ≠ markup**: margin is profit over *sale price*; markup is
+profit over *cost*. The same R$50 of profit is a 50% margin and a 100%
+markup here. **Gross profit ≠ contribution profit ≠ net profit**: gross
+profit only subtracts product cost; contribution profit subtracts every
+*known* variable cost tied to the sale; neither is net profit, which
+would also need fixed company expenses (salaries, rent, software) this
+module never sees or estimates — the term "net profit" is never used
+to label a value anywhere in this codebase.
+
+### Missing cost ≠ zero cost
+
+`seller_shipping_cost = Decimal("0")` means "we know shipping is free."
+`seller_shipping_cost = None` means "we don't know." An unknown category
+is **excluded** from `total_variable_cost`'s sum, never added as 0.
+
+### Cost Completeness, not "Confidence"
+
+Phase 5/6's "Confidence" existed to bound noisy, externally-sampled,
+correlated evidence. Margin's missing data is a different kind of
+thing — it's simply "how many of the 8 optional cost categories did
+the user supply," with no sampling bias or source-independence question
+to bound. So this phase does **not** reuse that formula:
+
+```
+cost_completeness_score = 100 * known_optional_categories / 8
+```
+
+### Margin Score — only when defensible
+
+`gross_profit`/`gross_margin_percent`/`markup_percent` only need
+`sale_price` + `product_cost` (always known) and are always computed.
+`contribution_profit`/`contribution_margin_percent` are also always
+computed from known costs, labeled "known costs only" everywhere. The
+single 0-100 `margin_score`, however, is withheld (`None`) unless
+`cost_completeness_score` reaches **50%** (at least 4 of 8 categories)
+— below that, presenting one confident number would overstate how much
+is actually known.
+
+Piecewise-linear interpolation over `contribution_margin_percent`
+(PROVISIONAL business heuristic, not empirically validated):
+
+| Margin | Score |
+|---|---|
+| ≤ -10% | 0 |
+| 0% | 15 |
+| 5% | 35 |
+| 10% | 55 |
+| 20% | 75 |
+| 30% | 90 |
+| ≥ 50% | 100 |
+
+### Break-even price
+
+Naively summing all costs is wrong whenever a cost is a *percentage* of
+price (raising the price to cover a % fee also raises that fee).
+Correct derivation: solving `contribution_profit(P) = 0` for `P`:
+
+```
+P = fixed_known_costs / (1 - sum_of_known_percentage_rates)
+```
+
+If the denominator is ≤ 0 (known percentage costs alone consume 100%+
+of revenue), `break_even_price` is `None` with a clear note — never a
+crash, never a negative/nonsensical number.
+
+### Marketplace fees and taxes: configurable, never hardcoded
+
+No current Mercado Livre fee table or Brazilian tax rate is hardcoded
+anywhere. `marketplace_fee_amount`/`marketplace_fee_rate`/`fixed_marketplace_fee`
+and `tax_amount`/`tax_rate` are all explicit, optional inputs. Supplying
+`marketplace_fee_amount` together with `marketplace_fee_rate` or
+`fixed_marketplace_fee` (or `tax_amount` with `tax_rate`) raises a clear
+`ValueError` — mixing an override with the components it would
+otherwise be computed from risks double-counting, so there is no silent
+precedence order. `marketplace_fee_rate` and `fixed_marketplace_fee`
+**may** coexist (a real percentage-plus-flat-fee structure).
+
+### What's new
+
+- `src/margin_models.py` — `MarginInputs`
+- `src/margin_analysis.py` — `MarginAnalysisResult`, `analyze_margin()`
+- `src/main.py` — CLI option `6. Analyze Margin`
+- `tests/test_margin_models.py`, `tests/test_margin_analysis.py`
+
+### Run it
+
+```bash
+python -m src.main
+```
+Choose option `6`. Only product name, sale price, and product cost are
+mandatory; every other cost prompt accepts a blank answer for "unknown."
+
+### Important design rule
+
+The Margin Score is **not** fed into the Phase 1 Opportunity Scoring
+Engine yet (which already treats margin as a positive dimension on
+manually-entered data) — this phase only builds and validates Margin
+Analysis in isolation.
+
+### Limitations
+
+- `margin_score` requires ≥50% cost-category completeness — a
+  provisional, documented threshold, not empirically validated.
+- The score anchors and the 50% threshold are configurable heuristics,
+  not proven business rules.
+- `payment_cost` is modeled as a flat amount only (no rate variant yet).
+- Return/refund reserve must be explicitly supplied — no default
+  percentage is ever assumed.
+- Not validated against real outcomes.
+
 ## Architecture direction
 
 The system is designed to grow into an orchestrator coordinating
@@ -688,9 +834,10 @@ root, so `src` resolves as a package whether you run `pytest` or
 
 14. Continuous improvement
 
-Phase 4 (trend data + deterministic trend analysis), Phase 5
-(deterministic Demand Analysis), and Phase 6 (deterministic Competition
-Analysis, described above) are layered on top of steps 5-7 — real
-external integrations plus the deterministic groundwork for the
-eventual Trend, Demand, and Competition Agents' contributions to the
-Opportunity Scoring Engine. Phase 6 is the current phase.
+Phase 4 (deterministic trend analysis), Phase 5 (deterministic Demand
+Analysis), Phase 6 (deterministic Competition Analysis), and Phase 7
+(deterministic Margin Analysis, described above) are layered on top of
+steps 5-8 — real external integrations plus the deterministic
+groundwork for the eventual Trend, Demand, Competition, and Margin
+Agents' contributions to the Opportunity Scoring Engine. Phase 7 is the
+current phase.

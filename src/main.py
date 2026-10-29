@@ -2,20 +2,24 @@
 
 Phase 2: Manual Analyzer. Phase 3: Mercado Livre search. Phase 4: Trend
 analysis. Phase 5: Demand analysis. Phase 6: Competition analysis.
+Phase 7: Margin analysis.
 
 This module is the presentation layer: it collects input from the user,
 delegates all scoring logic to src.models / src.scoring, all Mercado
 Livre HTTP/JSON handling to src.integrations.mercadolivre, all Apify/trend
 HTTP/JSON handling to src.integrations.apify_trends, all trend-metric math
 to src.trend_analysis, all demand math to src.demand_models /
-src.demand_analysis, and all competition math to src.competition_models /
-src.competition_analysis, then renders the result. It contains no
-scoring math and no HTTP logic of its own.
+src.demand_analysis, all competition math to src.competition_models /
+src.competition_analysis, and all margin/unit-economics math to
+src.margin_models / src.margin_analysis, then renders the result. It
+contains no scoring math and no HTTP logic of its own.
 
 Input-collecting functions accept an injectable `input_func` so the
 retry/validation logic can be unit tested without calling the real
 built-in input().
 """
+
+from decimal import Decimal, InvalidOperation
 
 from src.competition_analysis import analyze_competition
 from src.competition_models import build_competition_signals
@@ -28,6 +32,8 @@ from src.integrations.apify_trends import (
     fetch_trend_data,
 )
 from src.integrations.mercadolivre import MercadoLivreError, search_products
+from src.margin_analysis import analyze_margin
+from src.margin_models import MarginInputs
 from src.models import ComponentScores, Product
 from src.scoring import score_opportunity
 from src.trend_analysis import analyze_trend
@@ -73,11 +79,67 @@ def parse_non_empty_text(raw: str) -> str:
 
 
 def parse_menu_choice(raw: str) -> int:
-    """Validate that raw text is one of the main menu options (1-5)."""
+    """Validate that raw text is one of the main menu options (1-6)."""
     text = raw.strip()
-    if text not in {"1", "2", "3", "4", "5"}:
-        raise ValueError("choose 1, 2, 3, 4 or 5")
+    if text not in {"1", "2", "3", "4", "5", "6"}:
+        raise ValueError("choose 1, 2, 3, 4, 5 or 6")
     return int(text)
+
+
+def parse_required_positive_money(raw: str) -> Decimal:
+    """Parse a mandatory monetary value that must be greater than 0 (e.g. sale price)."""
+    text = raw.strip()
+    if not text:
+        raise ValueError("value cannot be empty")
+    try:
+        value = Decimal(text)
+    except InvalidOperation:
+        raise ValueError(f"'{raw}' is not a valid number")
+    if value <= 0:
+        raise ValueError(f"{value} must be greater than 0")
+    return value
+
+
+def parse_required_non_negative_money(raw: str) -> Decimal:
+    """Parse a mandatory monetary value that may be zero but not negative (e.g. product cost)."""
+    text = raw.strip()
+    if not text:
+        raise ValueError("value cannot be empty")
+    try:
+        value = Decimal(text)
+    except InvalidOperation:
+        raise ValueError(f"'{raw}' is not a valid number")
+    if value < 0:
+        raise ValueError(f"{value} must not be negative")
+    return value
+
+
+def parse_optional_money(raw: str) -> Decimal | None:
+    """Parse an optional monetary value. Blank means unknown (None), never zero."""
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        value = Decimal(text)
+    except InvalidOperation:
+        raise ValueError(f"'{raw}' is not a valid number")
+    if value < 0:
+        raise ValueError(f"{value} must not be negative")
+    return value
+
+
+def parse_optional_rate(raw: str) -> Decimal | None:
+    """Parse an optional rate as a fraction 0-1 (e.g. 0.12 for 12%). Blank means unknown."""
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        value = Decimal(text)
+    except InvalidOperation:
+        raise ValueError(f"'{raw}' is not a valid number")
+    if not (0 <= value <= 1):
+        raise ValueError(f"{value} must be between 0 and 1 (e.g. 0.12 for 12%)")
+    return value
 
 
 def ask_with_default(prompt_text: str, default: str, input_func=input) -> str:
@@ -516,6 +578,143 @@ def run_competition_analysis(input_func=input) -> None:
     print(format_competition_report(signals, result))
 
 
+def format_margin_report(inputs, result) -> str:
+    """Render MarginInputs + MarginAnalysisResult as a human-readable report.
+
+    Never calls contribution profit "net profit" -- fixed company
+    expenses are not included anywhere in this calculation.
+    """
+    lines = [
+        "=" * 50,
+        "MARGIN ANALYSIS REPORT (PROVISIONAL)",
+        "=" * 50,
+        f"Product: {result.product_name}",
+        f"Sale price: {result.sale_price}",
+        f"Product cost: {result.product_cost}",
+        "",
+        "Known costs:",
+        f"  Marketplace fee: {_format_optional(result.marketplace_fee_total)}",
+        f"  Shipping: {_format_optional(inputs.seller_shipping_cost)}",
+        f"  Packaging: {_format_optional(inputs.packaging_cost)}",
+        f"  Tax: {_format_optional(result.tax_total)}",
+        f"  Payment: {_format_optional(inputs.payment_cost)}",
+        f"  Advertising: {_format_optional(inputs.advertising_cost_per_sale)}",
+        f"  Return reserve: {_format_optional(inputs.return_reserve)}",
+        f"  Other: {_format_optional(inputs.other_variable_cost)}",
+        "",
+        "Derived (known-cost basis):",
+        f"  Gross profit: {result.gross_profit}",
+        f"  Gross margin: {result.gross_margin_percent}%",
+        f"  Markup: {_format_optional(result.markup_percent, '%')}",
+        f"  Known total variable cost: {result.total_variable_cost}",
+        f"  Contribution profit (known costs only): {result.contribution_profit}",
+        f"  Contribution margin (known costs only): {result.contribution_margin_percent}%",
+        f"  Break-even price (known costs only): {_format_optional(result.break_even_price)}",
+        "",
+        f"Margin Score: {_format_optional(result.margin_score)} "
+        "(PROVISIONAL -- business heuristic, not empirically validated)",
+        f"Cost Completeness Score: {result.cost_completeness_score:.2f}",
+    ]
+
+    lines.append("")
+    lines.append("Unavailable / unknown costs:")
+    for item in result.unavailable:
+        lines.append(f"  - {item}")
+
+    if result.notes:
+        lines.append("")
+        lines.append("Warnings:")
+        for note in result.notes:
+            lines.append(f"  - {note}")
+
+    lines.append("")
+    lines.append(
+        "Contribution profit is based on KNOWN variable costs only -- it is "
+        "NOT net profit. Fixed company expenses (salaries, rent, software, "
+        "accounting, etc.) are never included."
+    )
+    lines.append(
+        "This Margin Score is NOT fed into the Phase 1 Opportunity Scoring Engine yet."
+    )
+    lines.append("=" * 50)
+    return "\n".join(lines)
+
+
+def run_margin_analysis(input_func=input) -> None:
+    """Run the Phase 7 margin-analysis flow end to end.
+
+    Only `product_name`, `sale_price`, and `product_cost` are
+    mandatory. Every other cost is optional -- a blank answer means
+    "unknown" (excluded from sums), never a fabricated zero.
+    """
+    print("\nAnalyze Margin")
+    product_name = ask("Product name: ", parse_non_empty_text, input_func)
+    sale_price = ask("Sale price: ", parse_required_positive_money, input_func)
+    product_cost = ask("Product cost: ", parse_required_non_negative_money, input_func)
+
+    print(
+        "\nOptional costs -- leave blank if unknown "
+        "(blank = unknown, 0 = explicitly zero; they are not the same):"
+    )
+    marketplace_fee_amount = ask(
+        "Marketplace fee amount (blank if unknown): ", parse_optional_money, input_func
+    )
+    marketplace_fee_rate = ask(
+        "Marketplace fee rate, 0-1 e.g. 0.12 for 12% (blank if unknown): ",
+        parse_optional_rate,
+        input_func,
+    )
+    fixed_marketplace_fee = ask(
+        "Fixed marketplace fee (blank if unknown): ", parse_optional_money, input_func
+    )
+    seller_shipping_cost = ask(
+        "Seller shipping cost (blank if unknown): ", parse_optional_money, input_func
+    )
+    packaging_cost = ask("Packaging cost (blank if unknown): ", parse_optional_money, input_func)
+    tax_amount = ask("Tax amount (blank if unknown): ", parse_optional_money, input_func)
+    tax_rate = ask(
+        "Tax rate, 0-1 e.g. 0.06 for 6% (blank if unknown): ", parse_optional_rate, input_func
+    )
+    payment_cost = ask(
+        "Payment processing cost (blank if unknown): ", parse_optional_money, input_func
+    )
+    advertising_cost_per_sale = ask(
+        "Advertising cost per sale (blank if unknown): ", parse_optional_money, input_func
+    )
+    return_reserve = ask(
+        "Return/refund reserve per sale (blank if unknown): ", parse_optional_money, input_func
+    )
+    other_variable_cost = ask(
+        "Other variable cost (blank if unknown): ", parse_optional_money, input_func
+    )
+
+    try:
+        inputs = MarginInputs(
+            product_name=product_name,
+            sale_price=sale_price,
+            product_cost=product_cost,
+            marketplace_fee_amount=marketplace_fee_amount,
+            marketplace_fee_rate=marketplace_fee_rate,
+            fixed_marketplace_fee=fixed_marketplace_fee,
+            seller_shipping_cost=seller_shipping_cost,
+            packaging_cost=packaging_cost,
+            tax_amount=tax_amount,
+            tax_rate=tax_rate,
+            payment_cost=payment_cost,
+            advertising_cost_per_sale=advertising_cost_per_sale,
+            return_reserve=return_reserve,
+            other_variable_cost=other_variable_cost,
+        )
+    except ValueError as exc:
+        print(f"\nInvalid input: {exc}")
+        return
+
+    result = analyze_margin(inputs)
+
+    print()
+    print(format_margin_report(inputs, result))
+
+
 def main() -> None:
     print("RAVZ Product Hunter")
     print("1. Manual Product Analyzer")
@@ -523,8 +722,9 @@ def main() -> None:
     print("3. Analyze Trend")
     print("4. Analyze Demand")
     print("5. Analyze Competition")
+    print("6. Analyze Margin")
 
-    choice = ask("Choose an option (1-5): ", parse_menu_choice)
+    choice = ask("Choose an option (1-6): ", parse_menu_choice)
 
     if choice == 1:
         run_manual_analyzer()
@@ -534,8 +734,10 @@ def main() -> None:
         run_trend_analysis()
     elif choice == 4:
         run_demand_analysis()
-    else:
+    elif choice == 5:
         run_competition_analysis()
+    else:
+        run_margin_analysis()
 
 
 if __name__ == "__main__":

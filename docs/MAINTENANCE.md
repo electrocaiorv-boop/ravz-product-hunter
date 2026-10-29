@@ -346,6 +346,74 @@ official documentation. This section reflects the corrected findings.
    (field `usageTotalUsd`) and compare against the $0.0025/report
    recorded above.
 
+### Margin Analysis inputs (Phase 7)
+
+Phase 7 has NO live external dependency (no HTTP, no Mercado Livre, no
+Apify) -- `src/margin_models.py` and `src/margin_analysis.py` operate
+entirely on explicit user input. The checks below are therefore about
+money precision, architectural discipline, and regression coverage,
+not source availability.
+
+- [ ] Money precision: confirm every monetary/rate field on
+      `MarginInputs` is still `Decimal`, never `float` -- re-check any
+      new field added since this review uses `_to_decimal()` /
+      `Decimal(str(value))`, never `Decimal(value)` directly on a float
+- [ ] Rounding policy: confirm `ROUND_HALF_UP` to 2 decimal places is
+      still applied to each individually meaningful monetary amount as
+      soon as it's computed (not only once at the very end) --
+      `src/margin_analysis.py` `_round_money()`/`_round_percent()`
+- [ ] **Marketplace fee assumption rule**: confirm NO current Mercado
+      Livre fee table/percentage is hardcoded anywhere in
+      `src/margin_analysis.py` or `src/margin_models.py`. Marketplace
+      fees change over time by category/listing type/price/plan --
+      they must remain a configurable input (`marketplace_fee_amount`
+      / `marketplace_fee_rate` / `fixed_marketplace_fee`) until a
+      dedicated, explicitly-versioned fee adapter is built as a
+      SEPARATE module that still only ever produces a `MarginInputs`
+      (see "Future marketplace-fee adapter" below)
+- [ ] **Tax assumption rule**: confirm NO Brazilian tax regime or fixed
+      percentage is hardcoded anywhere. Tax depends on business
+      structure/regime/context -- `tax_amount`/`tax_rate` must remain
+      optional, user-supplied inputs
+- [ ] Fee amount vs. rate precedence: confirm
+      `marketplace_fee_amount` + (`marketplace_fee_rate` OR
+      `fixed_marketplace_fee`) together still raises `ValueError`
+      (same for `tax_amount` + `tax_rate`) -- this must never silently
+      pick a winner
+- [ ] Cost completeness logic: confirm `cost_completeness_score` is
+      still a plain `100 * known / 8` count, NOT Phase 5/6's
+      coverage-cap formula (the semantics genuinely differ here -- see
+      docs/LEARNING.md Fase 7)
+- [ ] Score thresholds: `MIN_COST_COMPLETENESS_FOR_SCORE` (50%) and
+      `MARGIN_SCORE_ANCHORS` are provisional, documented, and
+      adjustable -- re-confirm they are still labeled as such
+      everywhere they're displayed (CLI, README)
+- [ ] Break-even denominator: confirm `denominator <= 0` (not just
+      `< 0`) is still handled safely (no crash, `break_even_price =
+      None` with a note) -- exact-zero is a real, reachable case
+- [ ] Missing vs. zero semantics: re-run
+      `test_explicit_zero_shipping_differs_from_unknown_shipping` and
+      `test_explicit_zero_marketplace_fee_rate_differs_from_unknown_fee`
+      specifically after any refactor -- these are the two regression
+      tests most likely to silently break if someone "simplifies" the
+      None-handling later
+- [ ] **Future marketplace-fee adapter rule**: if/when Mercado Livre
+      access is restored and a fee-lookup adapter is eventually built,
+      it MUST live in `src/integrations/` (or similar), know nothing
+      about `src/margin_analysis.py`'s formulas, and produce nothing
+      but a populated `MarginInputs` -- the architecture is
+      `marketplace rules/fee integration -> MarginInputs ->
+      deterministic Margin Analysis`, same direction as every other
+      phase's `integration -> models -> analysis` pipeline. The
+      deterministic engine must never be taught to call out to a fee
+      API directly.
+- [ ] **Future tax adapter rule**: same architectural rule as above,
+      for any future tax-rate lookup.
+- [ ] Regression tests: full suite still passing
+      (`python -m pytest -v` and `pytest -v`), including the
+      Decimal-precision and rounding tests in
+      `tests/test_margin_analysis.py`
+
 ### Shared
 
 1. Check `pip list --outdated` for `requests`, `python-dotenv`, and

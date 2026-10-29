@@ -2225,3 +2225,419 @@ corretamente `Competition Score: not available`, `Confidence Score:
   sample" está correta SE as premissas forem verdadeiras -- o erro não
   está na matemática, está em assumir premissas (mapeamento 1-para-1,
   busca exaustiva) que o nosso sistema nunca verificou nem garantiu.
+
+---
+
+## Fase 7 — Análise de Margem (unit economics determinística)
+
+### 1. Nome da fase
+
+**Fase 7: motor determinístico de unit economics, estimando se um
+produto parece financeiramente viável depois de todos os custos
+CONHECIDOS -- funciona mesmo sem acesso ao Mercado Livre.**
+
+### 2. Explicação simples
+
+Imagine que você vende um hambúrguer por R$30. A carne e o pão custaram
+R$10. Numa primeira olhada, você pensa: "eu ganhei R$20."
+
+Mas depois você lembra:
+
+- o aplicativo de entrega ficou com R$5
+- a embalagem custou R$2
+- você deu um subsídio de frete de R$3
+- o imposto custou R$1
+
+Quanto realmente sobrou?
+
+```
+30 - 10 - 5 - 2 - 3 - 1 = R$9
+```
+
+Essa é exatamente a pergunta que a Análise de Margem responde: não
+"quanto eu cobrei?", mas **"depois de cada custo conhecido causado por
+essa venda, quanto dinheiro realmente sobrou?"**
+
+E tem um detalhe importante: e se você não souber, hoje, quanto custa o
+subsídio de frete? A resposta honesta não é "fingir que é zero" -- é
+dizer claramente "não sabemos esse custo ainda" e mostrar o resultado
+baseado só no que você sabe, deixando claro que ainda falta informação.
+É exatamente isso que o `Cost Completeness Score` desta fase comunica:
+"quanto da conta eu já sei de verdade?", separado de "esse número
+parece bom?" (`Margin Score`).
+
+### 3. Explicação técnica
+
+Implementamos a primeira camada de **unit economics** determinística do
+projeto, com a mesma separação arquitetural das fases anteriores:
+
+- `src/margin_models.py` — `MarginInputs`, o contrato de entrada
+  explícito (não existe "buscar de um provedor" aqui -- diferente das
+  Fases 4-6, o usuário digita os números diretamente).
+- `src/margin_analysis.py` — `analyze_margin()`, sem nenhum import de
+  HTTP, Mercado Livre, Apify ou LLM.
+
+- **Revenue (receita)**: `sale_price` -- o preço de venda, nada mais.
+- **COGS (Cost of Goods Sold) / custo do produto**: `product_cost` --
+  o que você pagou para ter o produto em mãos.
+- **Gross profit (lucro bruto)**: `sale_price - product_cost`. Só
+  subtrai o custo do produto, nada mais.
+- **Gross margin (margem bruta)**: `gross_profit / sale_price * 100`
+  -- lucro bruto como fração do PREÇO DE VENDA.
+- **Markup (markup/majoração)**: `gross_profit / product_cost * 100`
+  -- o MESMO lucro, mas como fração do CUSTO. **Margem e markup NÃO
+  são a mesma coisa** -- ver o exemplo numérico na seção 4.
+- **Variable cost (custo variável)**: um custo que existe por causa
+  dessa venda específica (taxa de marketplace, frete, embalagem,
+  imposto, processamento de pagamento, publicidade, reserva de
+  devolução). Contrasta com **fixed cost (custo fixo)**: salários,
+  aluguel, contabilidade, assinaturas de software -- existem
+  independente de qualquer venda específica, e este módulo NUNCA os
+  inclui nem estima.
+- **Contribution profit (lucro de contribuição)**: `sale_price` menos
+  TODOS os custos variáveis CONHECIDOS (incluindo `product_cost`).
+  Mais útil para decisão de ecommerce do que o lucro bruto, porque
+  reflete mais do que a venda realmente custou.
+- **Contribution margin (margem de contribuição)**:
+  `contribution_profit / sale_price * 100`.
+- **Net profit (lucro líquido)**: subtrairia também os custos FIXOS da
+  empresa. Este módulo **nunca** calcula nem chama nada de "net
+  profit" -- nem o gross profit, nem o contribution profit, são lucro
+  líquido, porque faltam os custos fixos da empresa como um todo.
+- **Percentage-based fee (taxa percentual)**: um custo que é uma
+  FRAÇÃO do preço de venda (ex.: `marketplace_fee_rate = 0.12` significa
+  12% do preço). **Fixed fee (taxa fixa)**: um valor absoluto, igual
+  independente do preço (ex.: `fixed_marketplace_fee = R$5`).
+- **Fee stacking (acúmulo de taxas)**: uma taxa percentual e uma taxa
+  fixa podem coexistir de verdade (ex.: Mercado Livre cobra um
+  percentual MAIS uma taxa fixa para itens de baixo valor) -- por
+  isso `marketplace_fee_rate` e `fixed_marketplace_fee` podem ser
+  informados juntos sem conflito. Já `marketplace_fee_amount` (o valor
+  total já calculado) NÃO pode coexistir com nenhum dos dois, porque
+  usar os dois juntos contaria a mesma taxa duas vezes.
+- **Break-even (ponto de equilíbrio)**: o preço mínimo de venda para
+  não ter prejuízo. Ver a derivação cuidadosa na seção 4 -- não é só
+  "somar todos os custos", porque taxas percentuais mudam com o
+  próprio preço.
+- **Cost completeness (completude de custos)**: `100 * categorias
+  conhecidas / 8` -- uma contagem simples de quantas das 8 categorias
+  de custo opcionais foram informadas, **não** a fórmula de confiança
+  com teto das Fases 5/6 (ver seção 4 para o porquê).
+- **Expected cost / reserve (custo esperado / reserva)**:
+  `return_reserve` modela uma alocação esperada de perda por devolução
+  -- um conceito de "custo médio esperado por venda", nunca inventado:
+  só existe se o usuário informar explicitamente um valor.
+- **Configurable heuristic (heurística configurável)**: os limiares do
+  `Margin Score` (`MARGIN_SCORE_ANCHORS`, `MIN_COST_COMPLETENESS_FOR_SCORE`)
+  são constantes de módulo, documentadas como heurísticas de negócio
+  provisórias -- não leis universais.
+- **Provisional score (score provisório)**: tanto `margin_score`
+  quanto `cost_completeness_score` são rotulados PROVISIONAL em todo
+  lugar que aparecem -- ainda não validados contra resultados reais.
+- **Deterministic financial model (modelo financeiro determinístico)**:
+  `analyze_margin()` sempre devolve o mesmo resultado para a mesma
+  entrada -- sem IA generativa, sem aleatoriedade, sem depender do
+  relógio.
+
+### 4. Conexão entre o simples e o técnico, com números
+
+O hambúrguer da seção 2 é exatamente o **contribution profit**: preço
+de venda menos TODOS os custos variáveis conhecidos, não só o custo da
+carne e do pão (isso seria só o **gross profit**).
+
+**Exemplo numérico completo** (do `CLAUDE.md`):
+
+```
+Sale price = 100         Product cost = 50
+Marketplace fee = 15     Shipping = 10
+
+Gross profit        = 100 - 50              = 50
+Gross margin        = 50 / 100 * 100        = 50%
+Markup               = 50 / 50 * 100         = 100%
+Contribution profit  = 100 - 50 - 15 - 10   = 25
+Contribution margin  = 25 / 100 * 100       = 25%
+```
+
+**50% de margem não é o mesmo que 100% de markup** -- é o MESMO lucro
+(R$50), só que margem divide pelo PREÇO (100) e markup divide pelo
+CUSTO (50). Essa confusão -- chamar markup de "margem" -- é um dos
+erros semânticos mais comuns em discussões de precificação, e é
+exatamente por isso que o `CLAUDE.md` pediu para documentar essa
+diferença "com cuidado".
+
+**Break-even, derivado com cuidado:** se eu simplesmente somasse todos
+os custos (R$50+15+10=75) e chamasse isso de "preço de equilíbrio",
+estaria certo *apenas* se nenhum custo fosse uma porcentagem do preço.
+Mas se a taxa de marketplace for 10% do preço (não um valor fixo),
+aumentar o preço para "cobrir o break-even" também aumenta a taxa --
+um problema circular. A derivação correta resolve
+`lucro_de_contribuição(P) = 0` para `P`:
+
+```
+lucro(P) = P - custos_fixos - P * soma_das_taxas_percentuais = 0
+P * (1 - soma_das_taxas) = custos_fixos
+P = custos_fixos / (1 - soma_das_taxas)      [só se o denominador > 0]
+```
+
+Com `product_cost=50`, `shipping=10` (fixos) e `marketplace_fee_rate=0.10`
++ `tax_rate=0.05` (percentuais): `custos_fixos=60`, `soma_das_taxas=0.15`,
+`break_even = 60 / 0.85 ≈ 70.59`. Se a soma das taxas percentuais fosse
+`>= 1` (100% ou mais da receita), o denominador seria zero ou negativo
+-- não existe preço finito que cubra os custos, e o sistema devolve
+`None` com uma nota clara, em vez de travar ou devolver um número sem
+sentido (negativo ou infinito).
+
+### 5. O que implementamos na prática
+
+- `src/margin_models.py`:
+  - `MarginInputs` — `product_name`, `sale_price`, `product_cost`
+    (obrigatórios) + 11 campos opcionais de custo, todos `Decimal |
+    None`. Validação em `__post_init__`: preço > 0, custo >= 0, todos
+    os valores monetários >= 0, taxas entre 0 e 1, e as regras de
+    precedência (amount vs. rate/fixed; amount vs. rate para impostos).
+- `src/margin_analysis.py`:
+  - `analyze_margin()` — calcula `gross_profit`, `gross_margin_percent`,
+    `markup_percent` (sempre), `marketplace_fee_total`, `tax_total`,
+    `total_variable_cost`, `contribution_profit`,
+    `contribution_margin_percent`, `break_even_price` (a partir dos
+    custos conhecidos), `cost_completeness_score` (sempre), e
+    `margin_score` (só se `cost_completeness_score >= 50%`).
+- `src/main.py` — nova opção `6. Analyze Margin`, perguntando
+  produto/preço/custo (obrigatórios) e 11 custos opcionais (branco =
+  desconhecido, nunca zero).
+- `tests/test_margin_models.py` e `tests/test_margin_analysis.py` —
+  61 testes determinísticos, incluindo precisão decimal, arredondamento
+  `ROUND_HALF_UP` em um caso de meio-centavo exato (`2.005`), diferença
+  entre zero explícito e `None` (tanto em campos brutos quanto em
+  categorias derivadas como a taxa de marketplace), break-even com e
+  sem taxas percentuais (verificado por "ida e volta": recalculando no
+  preço de equilíbrio e confirmando lucro de contribuição ≈ 0), e
+  denominador de break-even impossível tratado sem travar.
+- Validação real feita ao vivo via CLI: um primeiro exemplo com 3 de 8
+  categorias conhecidas (37.5%) corretamente reteve o `Margin Score`
+  (`None`, com aviso); um segundo exemplo com 7 de 8 categorias
+  (87.5%) produziu `Margin Score: 59.00` para uma margem de
+  contribuição de 12% -- confirmado à mão pela interpolação entre as
+  âncoras (10%→55) e (20%→75): `55 + 0.2*(75-55) = 59`.
+
+### 6. Termos técnicos aprendidos
+
+- **termo:** Unit economics
+  **definição:** a análise financeira de uma única unidade de venda
+  (um produto, uma transação), isolada dos custos fixos da empresa.
+  **como apareceu no projeto:** toda a Fase 7 é um motor de unit
+  economics.
+
+- **termo:** Revenue (receita)
+  **definição:** o valor total recebido por uma venda, antes de
+  qualquer custo ser subtraído.
+  **como apareceu no projeto:** `sale_price`.
+
+- **termo:** COGS (Cost of Goods Sold)
+  **definição:** o custo direto de adquirir ou produzir o produto
+  vendido.
+  **como apareceu no projeto:** `product_cost`.
+
+- **termo:** Gross profit / Gross margin (lucro bruto / margem bruta)
+  **definição:** lucro e margem calculados subtraindo APENAS o COGS,
+  sem nenhum outro custo.
+  **como apareceu no projeto:** `gross_profit = sale_price -
+  product_cost`; `gross_margin_percent = gross_profit / sale_price *
+  100`.
+
+- **termo:** Contribution profit / Contribution margin (lucro e margem
+  de contribuição)
+  **definição:** lucro e margem subtraindo TODOS os custos variáveis
+  conhecidos ligados à venda, não só o COGS.
+  **como apareceu no projeto:** `contribution_profit`,
+  `contribution_margin_percent` -- sempre rotulados "known costs only".
+
+- **termo:** Net profit (lucro líquido)
+  **definição:** o que realmente sobra depois de TODOS os custos,
+  incluindo despesas fixas da empresa (salários, aluguel, etc.).
+  **como apareceu no projeto:** NUNCA calculado aqui -- citado só para
+  explicar o que `contribution_profit` NÃO é.
+
+- **termo:** Markup (markup)
+  **definição:** lucro como fração do CUSTO do produto, não do preço
+  de venda.
+  **como apareceu no projeto:** `markup_percent = gross_profit /
+  product_cost * 100` -- `None` quando `product_cost` é zero (divisão
+  por zero, matematicamente indefinida).
+
+- **termo:** Margin vs. markup (margem vs. markup)
+  **definição:** dois jeitos diferentes de expressar o mesmo lucro em
+  porcentagem -- margem divide pelo preço, markup divide pelo custo --
+  nunca intercambiáveis.
+  **como apareceu no projeto:** exemplo numérico com 50% de margem e
+  100% de markup para o mesmo R$50 de lucro.
+
+- **termo:** Variable cost / Fixed cost (custo variável / custo fixo)
+  **definição:** custo variável existe por causa de uma venda
+  específica; custo fixo existe independente de qualquer venda.
+  **como apareceu no projeto:** taxas, frete, embalagem, etc. são
+  variáveis; salários/aluguel (nunca modelados aqui) seriam fixos.
+
+- **termo:** Break-even (ponto de equilíbrio)
+  **definição:** o preço de venda mínimo no qual o lucro de
+  contribuição é exatamente zero.
+  **como apareceu no projeto:** `break_even_price`, derivado
+  corretamente para lidar com taxas percentuais (ver seção 4).
+
+- **termo:** Percentage-based fee / Fixed fee (taxa percentual / taxa
+  fixa)
+  **definição:** uma taxa percentual é uma fração do preço; uma taxa
+  fixa é um valor absoluto independente do preço.
+  **como apareceu no projeto:** `marketplace_fee_rate`/`tax_rate`
+  (percentuais) vs. `marketplace_fee_amount`/`fixed_marketplace_fee`/
+  `tax_amount` (fixos).
+
+- **termo:** Fee stacking (acúmulo de taxas)
+  **definição:** quando uma taxa percentual e uma taxa fixa se somam
+  legitimamente para o mesmo custo.
+  **como apareceu no projeto:** `marketplace_fee_rate` +
+  `fixed_marketplace_fee` podem coexistir; validado com um teste
+  específico (`test_marketplace_fee_rate_and_fixed_fee_may_coexist`).
+
+- **termo:** Cost completeness (completude de custos)
+  **definição:** quantas das categorias de custo relevantes
+  realmente foram informadas, em porcentagem.
+  **como apareceu no projeto:** `cost_completeness_score = 100 *
+  known / 8` -- deliberadamente mais simples que o Confidence das
+  Fases 5/6, porque aqui não há amostragem nem evidência correlacionada
+  a limitar, só uma contagem direta do que o usuário informou.
+
+- **termo:** Missing cost vs. zero cost (custo ausente vs. custo zero)
+  **definição:** `None` significa "não sabemos"; `Decimal("0")`
+  significa "sabemos que é zero" -- nunca a mesma coisa.
+  **como apareceu no projeto:** testado explicitamente, inclusive para
+  campos derivados (taxa de marketplace calculada a partir de uma
+  `rate` explicitamente zero vs. ausente).
+
+- **termo:** Decimal
+  **definição:** um tipo numérico de ponto fixo decimal de precisão
+  arbitrária, que representa frações decimais exatamente.
+  **como apareceu no projeto:** todo campo monetário/de taxa em
+  `MarginInputs` e `MarginAnalysisResult`.
+
+- **termo:** Floating-point precision (precisão de ponto flutuante)
+  **definição:** `float` usa base binária e não representa a maioria
+  das frações decimais exatamente, causando erros minúsculos que se
+  acumulam em cálculos financeiros.
+  **como apareceu no projeto:** `_to_decimal()` converte floats via
+  `str()` especificamente para não importar esse erro.
+
+- **termo:** Rounding (arredondamento)
+  **definição:** a regra usada para reduzir um número para um número
+  fixo de casas decimais.
+  **como apareceu no projeto:** `ROUND_HALF_UP` a 2 casas decimais,
+  aplicado a cada valor monetário individual logo que é calculado --
+  política documentada, testada com um caso de meio-centavo exato.
+
+- **termo:** Financial precision (precisão financeira)
+  **definição:** a prática de garantir que cálculos de dinheiro nunca
+  percam ou ganhem centavos por erro de representação numérica.
+  **como apareceu no projeto:** o uso de `Decimal` em vez de `float`
+  em todo o módulo, e o arredondamento disciplinado.
+
+- **termo:** Configurable heuristic (heurística configurável)
+  **definição:** uma regra de negócio implementada como constantes
+  ajustáveis e documentadas, não como uma verdade fixa no código.
+  **como apareceu no projeto:** `MARGIN_SCORE_ANCHORS` e
+  `MIN_COST_COMPLETENESS_FOR_SCORE`.
+
+- **termo:** Provisional score (score provisório)
+  **definição:** um número de 0 a 100 explicitamente rotulado como não
+  validado contra resultados reais.
+  **como apareceu no projeto:** `margin_score`, sempre acompanhado do
+  rótulo "PROVISIONAL" no relatório.
+
+- **termo:** Expected cost / reserve (custo esperado / reserva)
+  **definição:** uma alocação de custo que representa uma perda média
+  esperada por venda (como devoluções), não um custo certo em toda
+  venda individual.
+  **como apareceu no projeto:** `return_reserve` -- nunca com um
+  percentual padrão inventado, só se informado explicitamente.
+
+- **termo:** Deterministic financial model (modelo financeiro
+  determinístico)
+  **definição:** um cálculo financeiro cujo resultado depende apenas
+  dos dados de entrada -- sempre o mesmo para a mesma entrada.
+  **como apareceu no projeto:** `analyze_margin()` inteiro, testado com
+  entradas idênticas produzindo resultados idênticos.
+
+### 7. Comandos/ferramentas usados
+
+```bash
+python -m src.main          # executar a CLI (opção 6 = Analyze Margin)
+python -m pytest -v         # rodar todos os testes via módulo
+pytest -v                   # rodar todos os testes direto
+```
+
+Ferramentas: Python 3.12, `decimal.Decimal` (biblioteca padrão, nenhuma
+dependência nova), `pytest`. Esta é a primeira fase do projeto que não
+depende de nenhuma API externa para funcionar -- funciona 100% offline.
+
+### 8. Como explicar isso para um recrutador ou cliente
+
+"Eu construí um motor de unit economics determinístico que separa
+margem bruta de margem de contribuição, modela custos fixos e
+percentuais de transação, preserva custos desconhecidos em vez de
+tratá-los silenciosamente como zero, calcula o preço de equilíbrio
+corretamente mesmo com taxas percentuais, e expõe a completude dos
+dados de custo separadamente da lucratividade."
+
+Para defender essa frase numa entrevista, o que cada parte significa:
+
+- "Separa margem bruta de margem de contribuição": margem bruta só
+  considera o custo do produto; margem de contribuição considera todos
+  os custos variáveis conhecidos da venda -- são perguntas diferentes,
+  e confundi-las leva a decisões de preço erradas.
+- "Modela custos fixos e percentuais de transação": uma taxa de
+  marketplace pode ser um valor fixo OU uma porcentagem do preço (ou
+  os dois somados) -- o sistema sabe representar e calcular ambos
+  corretamente, inclusive no break-even, onde a diferença importa
+  matematicamente.
+- "Preserva custos desconhecidos em vez de tratá-los como zero": se eu
+  não sei o custo de publicidade, o sistema não finge que é R$0 -- ele
+  exclui essa categoria do cálculo e avisa que está faltando, para que
+  ninguém tome uma decisão com base em um número incompleto disfarçado
+  de completo.
+- "Calcula o preço de equilíbrio corretamente mesmo com taxas
+  percentuais": a fórmula naive (somar todos os custos) está errada
+  quando existe uma taxa percentual, porque aumentar o preço também
+  aumenta essa taxa -- resolvi a equação algebricamente em vez de usar
+  a soma simples.
+- "Expõe a completude dos dados separadamente da lucratividade": um
+  produto pode parecer ótimo (`Margin Score: 90`) mas com poucos dados
+  reais por trás (`Cost Completeness: 30%`) -- tratar essas duas coisas
+  como uma só esconderia o quão arriscada é essa conclusão.
+
+### 9. O que devo lembrar desta fase
+
+- **Margem e markup nunca são intercambiáveis** -- a mesma situação
+  financeira produz dois números diferentes dependendo do
+  denominador, e confundir os dois é um erro clássico de precificação.
+- **Nunca chamar lucro de contribuição de "lucro líquido"** -- faltam
+  os custos fixos da empresa, e fingir que não faltam é enganoso.
+- **Custo desconhecido é diferente de custo zero**, inclusive quando o
+  custo é DERIVADO (ex.: uma taxa calculada a partir de uma `rate`) --
+  essa distinção precisa sobreviver em cada camada de cálculo, não só
+  nos campos de entrada brutos.
+- **Break-even não é "somar todos os custos"** quando qualquer custo é
+  percentual -- a álgebra muda, e ignorar isso produz um preço de
+  equilíbrio sutilmente errado que parece plausível.
+- **Nem toda métrica precisa do mesmo guardião de completude**: o
+  `Margin Score` (uma conclusão única de 0-100) é bloqueado por um
+  limiar de completude; `contribution_profit`/`break_even_price`
+  (métricas "baseadas no que sabemos") não são -- são coisas diferentes
+  com necessidades diferentes de honestidade.
+- **Nem toda "incerteza" é a mesma incerteza**: o Confidence das Fases
+  5/6 lidava com evidência correlacionada de uma amostra externa; o
+  Cost Completeness desta fase é só uma contagem direta do que o
+  usuário informou -- copiar a fórmula anterior sem pensar no
+  significado teria sido um erro, não uma reutilização inteligente.
+- **Decimal não é opcional em código financeiro** -- é a diferença
+  entre um sistema em que `0.1 + 0.2 == 0.3` é verdade, e um em que não
+  é. Qualquer novo campo monetário futuro deve seguir o mesmo padrão
+  (`_to_decimal`, arredondamento `ROUND_HALF_UP` documentado).
