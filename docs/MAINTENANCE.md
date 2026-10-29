@@ -414,6 +414,71 @@ not source availability.
       Decimal-precision and rounding tests in
       `tests/test_margin_analysis.py`
 
+### Supplier Analysis inputs (Phase 8)
+
+Phase 8, like Phase 7, has NO live external dependency -- no HTTP, no
+Mercado Livre, no Apify, no scraping. `src/supplier_models.py` and
+`src/supplier_analysis.py` operate entirely on explicit user input.
+
+- [ ] **`SupplierInputs` schema**: re-confirm all 20 optional fields
+      still match `src/supplier_models.py`'s field list and docstring
+      if the model is ever extended
+- [ ] **MOQ semantics**: `moq_units >= 1` if given (0 is not a
+      meaningful minimum) -- re-confirm this validation still holds
+- [ ] **Stock semantics**: `stock_quantity` (a count) and
+      `stock_available` (a tri-state boolean) remain two SEPARATE
+      fields, never merged -- re-confirm `stock_quantity < moq_units`
+      is still allowed to CONSTRUCT (it's a real blocker condition,
+      not an input-representation conflict) while fee/lead-time-style
+      ambiguous representations are still rejected
+- [ ] **Lead-time derivation**: `lead_time_days` explicit vs.
+      `dispatch_time_days + delivery_time_days` -- re-confirm supplying
+      an explicit total together with BOTH components is still
+      rejected at construction (no double counting), while supplying
+      only one component alongside an explicit total is still allowed
+- [ ] **Boolean tri-state handling**: re-run
+      `test_fulfillment_boolean_tristate_excludes_unknown` and
+      `test_trust_boolean_tristate_excludes_unknown` after any
+      refactor -- these are the tests most likely to silently break if
+      someone "simplifies" `None`-handling into `False` later
+- [ ] **Blocker logic**: re-confirm `stock_quantity == 0` /
+      `stock_available is False` / `stock_quantity < moq_units` are
+      still the ONLY hard blockers, and that `dropshipping_supported
+      == False` still does NOT block (documented as a deliberate
+      choice -- bulk sourcing remains viable)
+- [ ] **Score weights**: `WEIGHT_ORDER_FLEXIBILITY` (0.25) /
+      `WEIGHT_OPERATIONAL_SPEED` (0.20) / `WEIGHT_STOCK_VIABILITY`
+      (0.20) / `WEIGHT_FULFILLMENT_CAPABILITY` (0.15) / `WEIGHT_TRUST`
+      (0.20) and all piecewise-linear anchors are provisional,
+      documented, recalibrate only against real outcome data
+- [ ] **Completeness weights**: re-verify `EVIDENCE_WEIGHTS` in
+      `src/supplier_analysis.py` still sums to exactly 1.0 after any
+      edit (`sum(EVIDENCE_WEIGHTS.values()) == 1.0`) -- this is easy to
+      silently break by adding/removing a field without rebalancing
+- [ ] **Rating/review semantics**: `supplier_rating` is a 0-5 scale
+      input CONTRACT (not a universal provider behavior) --
+      re-confirm out-of-range values are still rejected; re-confirm
+      `RATING_CREDIBILITY_ANCHORS` still shrinks low-review-count
+      ratings toward neutral (50) rather than trusting them at face
+      value
+- [ ] **Future supplier adapters**: if/when a real supplier directory,
+      B2B marketplace API, or crawler is integrated, it MUST live in
+      `src/integrations/` (or similar), know nothing about
+      `src/supplier_analysis.py`'s formulas, and produce nothing but a
+      populated `SupplierInputs` -- same `integration -> models ->
+      analysis` direction as every other phase
+- [ ] **Future scraping/API integration boundary**: any future
+      automated supplier-data collection must still never let
+      `src/supplier_analysis.py` import HTTP/Apify/Mercado
+      Livre/browser-automation code directly
+- [ ] **No "Mercado Livre seller == supplier" assumption**: re-confirm
+      `src/supplier_models.py` and `src/supplier_analysis.py` still
+      import NOTHING from `src.integrations` (`grep -n "^import\|^from"
+      src/supplier_*.py` should show only `dataclasses`/`decimal`) --
+      this is the single most important rule in this phase
+- [ ] Regression tests: full suite still passing
+      (`python -m pytest -v` and `pytest -v`)
+
 ### Shared
 
 1. Check `pip list --outdated` for `requests`, `python-dotenv`, and

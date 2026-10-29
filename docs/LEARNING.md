@@ -2641,3 +2641,450 @@ Para defender essa frase numa entrevista, o que cada parte significa:
   entre um sistema em que `0.1 + 0.2 == 0.3` é verdade, e um em que não
   é. Qualquer novo campo monetário futuro deve seguir o mesmo padrão
   (`_to_decimal`, arredondamento `ROUND_HALF_UP` documentado).
+
+---
+
+## Fase 8 — Análise de Fornecedor (sourcing viability determinística)
+
+### 1. Nome da fase
+
+**Fase 8: motor determinístico que avalia se um fornecedor parece
+operacionalmente viável e suficientemente confiável para abastecer um
+produto -- sem nenhuma integração de scraping ainda.**
+
+### 2. Explicação simples
+
+Imagine que você encontrou um restaurante com um hambúrguer incrível.
+Esse hambúrguer ser bom não é suficiente para você abrir uma franquia
+baseada nele. Antes de investir, você precisa saber:
+
+- a cozinha consegue produzir em quantidade suficiente?
+- consegue entregar no prazo?
+- tem os ingredientes de forma consistente, todo dia?
+- consegue emitir a nota fiscal que você precisa?
+- atende um pedido pequeno, ou só pedidos grandes?
+- tem uma quantidade mínima de pedido?
+- você pode confiar nele amanhã, e depois de amanhã também?
+
+A Análise de Fornecedor faz exatamente essas perguntas sobre uma fonte
+de produto. Um produto excelente com um fornecedor péssimo ainda é um
+negócio ruim -- por isso essa análise existe separada das outras: ela
+não pergunta "esse produto vende bem?" (isso é Demanda) nem "é fácil
+competir nesse mercado?" (Concorrência) nem "a venda compensa
+financeiramente?" (Margem) -- ela pergunta **"eu consigo, na prática,
+comprar esse produto desse fornecedor, em condições de trabalho
+aceitáveis?"**
+
+### 3. Explicação técnica
+
+Implementamos a primeira camada de **sourcing** e **procurement**
+determinística do projeto, com a mesma separação arquitetural das
+fases anteriores:
+
+- `src/supplier_models.py` — `SupplierInputs`, entrada explícita (sem
+  nenhuma integração de fornecedor ainda -- nem scraping, nem API).
+- `src/supplier_analysis.py` — `analyze_supplier()`, sem nenhum import
+  de HTTP, Mercado Livre, Apify, automação de navegador ou LLM.
+
+- **Supplier / Sourcing / Procurement**: `supplier` é a entidade que
+  vende o produto para nós em quantidade (não o cliente final);
+  `sourcing` é o processo de encontrar e avaliar fornecedores;
+  `procurement` é a disciplina mais ampla de comprar bem (preço,
+  prazo, qualidade, risco).
+- **Um vendedor do Mercado Livre NÃO é um fornecedor.** Um anúncio de
+  varejo nunca é prova de disponibilidade no atacado, suporte a
+  dropshipping, fornecimento estável, autorização de revenda,
+  continuidade de estoque, ou emissão de nota fiscal. Por isso,
+  `src/supplier_models.py` e `src/supplier_analysis.py` não importam
+  **nada** de `src.integrations` -- essa é uma regra arquitetural, não
+  só um comentário no código.
+- **MOQ (Minimum Order Quantity / Quantidade Mínima de Pedido)**: a
+  menor quantidade que o fornecedor aceita vender de uma vez. MOQ 1 é
+  extremamente flexível (bom para testar o produto ou fazer
+  dropshipping); MOQ 500 representa um compromisso alto de estoque.
+  Não existe um MOQ "bom" universal -- os limiares de pontuação são
+  heurísticas provisórias, documentadas como tal.
+- **Minimum order value (valor mínimo de pedido)**: parecido com MOQ,
+  mas em dinheiro em vez de unidades -- um fornecedor pode exigir um
+  valor mínimo de compra, não uma quantidade mínima.
+- **Lead time / dispatch time / delivery time**: três conceitos
+  diferentes, frequentemente confundidos. `dispatch_time` é o tempo
+  que o fornecedor leva ANTES de despachar (preparar, embalar).
+  `delivery_time` é o tempo de transporte DEPOIS do despacho.
+  `lead_time` é o tempo TOTAL, do pedido até o recebimento. Se os dois
+  primeiros forem conhecidos, `lead_time = dispatch + delivery` -- mas
+  se um `lead_time` explícito já foi informado, somar os dois de novo
+  contaria o mesmo tempo duas vezes. Por isso, informar `lead_time`
+  explícito JUNTO com os dois componentes é rejeitado na construção do
+  modelo.
+- **Inventory / Stock availability / Fulfillment**: `inventory` é o
+  estoque do fornecedor; `stock_available` é um booleano tri-estado
+  (sim/não/desconhecido) sobre se há estoque agora; `stock_quantity` é
+  a contagem conhecida (quando existe). `fulfillment` é a capacidade
+  operacional de realmente completar um pedido (despachar, embalar,
+  rastrear, etc.).
+- **Dropshipping / Blind shipping**: `dropshipping_supported` significa
+  que o fornecedor consegue enviar pedidos individuais diretamente para
+  o cliente final (sem o revendedor precisar estocar). `blind_shipping_supported`
+  significa que o fornecedor consegue enviar sem expor sua própria marca
+  -- são capacidades DIFERENTES, uma não implica a outra.
+- **Tracking (rastreamento)**: se o envio pode ser rastreado -- um
+  sinal operacional, não um sinal de confiança por si só.
+- **Supplier reliability (confiabilidade do fornecedor)**: o quanto
+  podemos confiar que o fornecedor vai continuar entregando como
+  prometido -- medida aqui através de sinais indiretos (nota fiscal,
+  política de devolução, verificação de negócio, contato disponível,
+  avaliação), nunca inventada.
+- **Commercial terms (termos comerciais)**: as condições de compra --
+  preço unitário, MOQ, valor mínimo, prazo de pagamento, custo de
+  frete. Avaliamos essas condições como RESTRIÇÕES DE SOURCING, mas
+  NUNCA recalculamos a margem de contribuição aqui -- isso já é
+  trabalho da Fase 7 (`src/margin_analysis.py`), e duplicá-lo seria um
+  erro de responsabilidade.
+- **Operational constraint (restrição operacional)**: uma condição que
+  limita como/quando podemos operar com esse fornecedor (ex.: MOQ alto,
+  lead time longo) -- diferente de uma restrição FINANCEIRA (isso é
+  Margem).
+- **Hard blocker (bloqueador rígido)**: uma condição que torna o
+  sourcing atualmente IMPOSSÍVEL, não apenas pior. Diferente de um
+  "desconto na média" -- um bloqueador aparece separadamente, nunca
+  escondido dentro de uma média ponderada. Ver seção 4 para quais
+  condições qualificamos como bloqueadores reais, e por quê
+  deliberadamente REJEITAMOS outras candidatas (ex.: não suportar
+  dropshipping).
+- **Evidence completeness (completude de evidência)**: quanto
+  realmente sabemos sobre esse fornecedor, numa escala ponderada --
+  preferida aqui sobre "Confidence" genérico porque descreve com mais
+  precisão o que está sendo medido (quantidade de informação, não
+  confiabilidade estatística de uma amostra externa).
+- **Boolean tri-state (booleano de três estados)**: `True`/`False`/`None`
+  em vez do booleano tradicional de dois estados -- necessário porque
+  "não sabemos" e "sabemos que é não" são informações muito diferentes.
+- **True vs. False vs. None**: `invoice_available = False` significa
+  "verificamos, e não emite nota"; `invoice_available = None` significa
+  "não verificamos ainda." Nunca tratamos o segundo como o primeiro.
+- **Weighted completeness (completude ponderada)**: nem todo campo
+  importa igualmente -- saber o nome do fornecedor pesa muito menos do
+  que saber o MOQ, o estoque, o prazo de despacho, a capacidade de
+  dropshipping, ou a situação da nota fiscal. `EVIDENCE_WEIGHTS` tem 16
+  itens, somando exatamente 1.0, com esses cinco entre os mais pesados.
+- **Sample/evidence limitation (limitação de amostra/evidência)**: uma
+  única avaliação (uma nota, um review) não deveria valer tanto quanto
+  várias avaliações independentes -- ver o modelo de rating abaixo.
+- **Normalized rating (nota normalizada)**: aceitamos `supplier_rating`
+  apenas numa escala 0-5 -- um CONTRATO de entrada deste projeto, não
+  um comportamento universal de qualquer fornecedor/plataforma. Se a
+  escala original fosse ambígua (0-10? 0-100? estrelas?), não
+  pontuaríamos o valor sem normalizar primeiro.
+- **Review-count context (contexto de número de avaliações)**: uma
+  nota 5.0 com 2 avaliações não deveria valer o mesmo que uma nota 4.8
+  com 10.000 avaliações -- ver a fórmula de credibilidade na seção 4.
+- **Provider-neutral model (modelo neutro em relação ao provedor)**:
+  `SupplierInputs` não sabe de onde os dados vieram (digitados à mão
+  hoje; de uma API/scraper no futuro) -- a análise funciona igual.
+- **Deterministic supplier scoring (pontuação de fornecedor
+  determinística)**: `analyze_supplier()` sempre devolve o mesmo
+  resultado para a mesma entrada -- sem IA, sem aleatoriedade.
+
+### 4. Conexão entre o simples e o técnico, com números
+
+"A cozinha consegue produzir em quantidade suficiente?" é o
+`stock_viability_score` e o `order_flexibility_score` (MOQ). "Consegue
+entregar no prazo?" é o `operational_speed_score` (lead time). "Emite a
+nota fiscal que eu preciso?" é parte do `trust_score`
+(`invoice_available`). "Atende um pedido pequeno?" é exatamente o que
+o MOQ mede. "Posso confiar nele amanhã também?" é a pergunta que o
+`supplier_rating` tenta responder -- com cuidado.
+
+**Exemplo numérico do ajuste de credibilidade de avaliação** (o
+"5.0 com 2 avaliações" do `CLAUDE.md`):
+
+```
+rating = 5.0, review_count = 2
+normalized_rating = 5.0 / 5 * 100 = 100
+credibility = interpolação entre (1, 0.15) e (5, 0.35) em review_count=2
+            = 0.15 + (2-1)/(5-1) * (0.35-0.15) = 0.15 + 0.05 = 0.20
+effective_rating = 50 + 0.20 * (100 - 50) = 50 + 10 = 60.0
+```
+
+```
+rating = 4.8, review_count = 10.000
+normalized_rating = 4.8 / 5 * 100 = 96
+credibility = 1.0 (acima do maior ponto de ancoragem, 200 avaliações)
+effective_rating = 50 + 1.0 * (96 - 50) = 96.0
+```
+
+A nota de 5.0 com 2 avaliações vira efetivamente **60** (quase
+neutro); a nota de 4.8 com 10.000 avaliações vira **96** (quase o
+valor de face). Essa é a diferença que o `CLAUDE.md` pediu para
+capturar -- de forma determinística, sem inventar sofisticação
+estatística (sem intervalo de confiança real, sem prior bayesiano, só
+uma fórmula simples, documentada e testável).
+
+**Quais bloqueadores foram incluídos, e quais foram rejeitados, e
+por quê:**
+
+- `stock_quantity == 0` ou `stock_available is False`: **bloqueador**
+  -- sem estoque conhecido, não há como vender agora.
+- `stock_quantity < moq_units` (quando ambos conhecidos): **bloqueador**
+  -- o estoque conhecido não cobre nem o pedido mínimo.
+- `dropshipping_supported == False`: **NÃO é bloqueador** -- compra em
+  lote com autofulfillment continua sendo uma estratégia válida; isso
+  só reduz o `fulfillment_capability_score`, não desqualifica o
+  fornecedor.
+- Dados comerciais negativos (ex.: custo unitário negativo): **nunca
+  chega a ser um bloqueador em tempo de execução**, porque
+  `SupplierInputs` já rejeita isso na construção -- é um erro de
+  entrada, não uma condição de negócio real para analisar.
+
+### 5. O que implementamos na prática
+
+- `src/supplier_models.py`:
+  - `SupplierInputs` — `product_name`, `supplier_name` (obrigatórios) +
+    20 campos opcionais (comerciais, estoque, operacionais,
+    dropshipping, confiança, evidência). Validação: MOQ >= 1, valor
+    mínimo > 0, nenhum valor monetário/contagem negativo, rating entre
+    0 e 5, booleanos só True/False/None, e a regra de conflito de
+    lead time (explícito + os dois componentes juntos = rejeitado).
+- `src/supplier_analysis.py`:
+  - `analyze_supplier()` — calcula `order_flexibility_score`,
+    `operational_speed_score`, `stock_viability_score`,
+    `fulfillment_capability_score`, `trust_score` (pesos
+    0.25/0.20/0.20/0.15/0.20), detecta bloqueadores separadamente,
+    calcula `evidence_completeness_score` (ponderado, 16 itens somando
+    1.0), e só produz `supplier_score` se a completude atingir 35%.
+  - `operational_status`: `BLOCKED` / `INSUFFICIENT_DATA` / `VIABLE` /
+    `CAUTION`, nessa ordem de prioridade.
+- `src/main.py` — nova opção `7. Analyze Supplier`, com suporte
+  explícito a `y`/`n`/branco para os campos booleanos (nunca forçando
+  branco para `n`).
+- `tests/test_supplier_models.py` e `tests/test_supplier_analysis.py`
+  -- 75 testes determinísticos cobrindo fornecedor forte/fraco/esparso,
+  todos os dados opcionais ausentes, `False` explícito vs. `None`,
+  zero explícito vs. `None`, MOQ 1 e MOQ alto, estoque disponível/
+  indisponível/zero/abaixo do MOQ, despacho sozinho/entrega sozinha/
+  os dois somados/tempo explícito (sem contar duas vezes), dropshipping
+  e blind shipping em todos os três estados, avaliação com poucas e
+  muitas avaliações, bloqueadores não escondidos numa média alta, e
+  completude de evidência independente da qualidade do fornecedor.
+- Validação real feita ao vivo via CLI com um fornecedor realista
+  (MOQ 20, estoque 50, despacho+entrega=5 dias, dropshipping/blind
+  shipping/rastreamento/nota/política/verificação/contato todos `y`,
+  nota 4.6 com 85 avaliações): Supplier Score 86.05, Evidence
+  Completeness 92%, status VIABLE -- cada subcomponente confirmado à
+  mão contra a fórmula antes de aceitar o resultado.
+
+### 6. Termos técnicos aprendidos
+
+- **termo:** Supplier (fornecedor)
+  **definição:** a entidade que vende o produto para nós, em
+  quantidade, para revenda -- não o cliente final.
+  **como apareceu no projeto:** `SupplierInputs.supplier_name`.
+
+- **termo:** Sourcing
+  **definição:** o processo de encontrar e avaliar de onde obter um
+  produto.
+  **como apareceu no projeto:** o nome da pergunta de negócio central
+  desta fase.
+
+- **termo:** Procurement
+  **definição:** a disciplina mais ampla de compras -- preço, prazo,
+  qualidade, risco, termos contratuais.
+  **como apareceu no projeto:** o contexto geral em que MOQ, prazo de
+  pagamento e termos comerciais são avaliados.
+
+- **termo:** MOQ (Minimum Order Quantity)
+  **definição:** a menor quantidade que um fornecedor aceita vender de
+  uma vez.
+  **como apareceu no projeto:** `moq_units`, alimentando
+  `order_flexibility_score`.
+
+- **termo:** Minimum order value (valor mínimo de pedido)
+  **definição:** o menor valor em dinheiro que um fornecedor aceita por
+  pedido, independente da quantidade de unidades.
+  **como apareceu no projeto:** `minimum_order_value`, combinado com
+  MOQ (60%/40%) quando ambos conhecidos.
+
+- **termo:** Lead time
+  **definição:** o tempo total do pedido até o recebimento.
+  **como apareceu no projeto:** `lead_time_days`, explícito ou derivado
+  de `dispatch_time_days + delivery_time_days`.
+
+- **termo:** Dispatch time
+  **definição:** o tempo que o fornecedor leva para preparar e
+  despachar, antes do envio sair.
+  **como apareceu no projeto:** `dispatch_time_days`.
+
+- **termo:** Delivery time
+  **definição:** o tempo de transporte depois que o envio sai do
+  fornecedor.
+  **como apareceu no projeto:** `delivery_time_days`.
+
+- **termo:** Inventory (estoque)
+  **definição:** a quantidade de produto que o fornecedor tem
+  disponível para venda.
+  **como apareceu no projeto:** `stock_quantity`.
+
+- **termo:** Stock availability (disponibilidade de estoque)
+  **definição:** se há estoque disponível agora -- um booleano
+  tri-estado, separado da quantidade exata.
+  **como apareceu no projeto:** `stock_available`, deliberadamente
+  separado de `stock_quantity`.
+
+- **termo:** Fulfillment
+  **definição:** a capacidade operacional de completar um pedido de
+  ponta a ponta (despachar, embalar, rastrear).
+  **como apareceu no projeto:** `fulfillment_capability_score`.
+
+- **termo:** Dropshipping
+  **definição:** o fornecedor envia pedidos individuais diretamente
+  para o cliente final, sem o revendedor precisar estocar.
+  **como apareceu no projeto:** `dropshipping_supported`.
+
+- **termo:** Blind shipping
+  **definição:** o fornecedor consegue enviar sem expor sua própria
+  marca/identidade no pacote ou na nota.
+  **como apareceu no projeto:** `blind_shipping_supported` -- tratado
+  como independente de `dropshipping_supported`, nunca inferido dele.
+
+- **termo:** Tracking (rastreamento)
+  **definição:** a capacidade de acompanhar um envio em trânsito.
+  **como apareceu no projeto:** `tracking_available`.
+
+- **termo:** Supplier reliability (confiabilidade do fornecedor)
+  **definição:** o quanto se pode confiar que o fornecedor vai
+  continuar entregando como prometido.
+  **como apareceu no projeto:** medido indiretamente via
+  `trust_score`, nunca afirmado diretamente.
+
+- **termo:** Commercial terms (termos comerciais)
+  **definição:** as condições de compra -- preço, MOQ, prazo de
+  pagamento, frete.
+  **como apareceu no projeto:** os campos "Commercial" de
+  `SupplierInputs`.
+
+- **termo:** Operational constraint (restrição operacional)
+  **definição:** uma condição que limita como ou quando se pode operar
+  com um fornecedor, sem necessariamente inviabilizar o negócio.
+  **como apareceu no projeto:** MOQ alto, lead time longo -- reduzem a
+  pontuação, mas (sozinhos) não bloqueiam.
+
+- **termo:** Hard blocker (bloqueador rígido)
+  **definição:** uma condição que torna o sourcing atualmente
+  impossível, exibida separadamente de qualquer média.
+  **como apareceu no projeto:** `result.blockers`, mostrado junto com
+  (não escondido por) `supplier_score`.
+
+- **termo:** Evidence completeness (completude de evidência)
+  **definição:** quanto se sabe sobre algo, numa escala mensurável --
+  preferido sobre "confidence" quando o que se mede é literalmente
+  quantidade de informação, não confiabilidade estatística de amostra.
+  **como apareceu no projeto:** `evidence_completeness_score`,
+  ponderado por 16 campos.
+
+- **termo:** Boolean tri-state (booleano de três estados)
+  **definição:** um valor que pode ser `True`, `False`, ou `None`
+  (desconhecido) -- não apenas dois estados.
+  **como apareceu no projeto:** todos os 8 campos booleanos de
+  `SupplierInputs`.
+
+- **termo:** Weighted completeness (completude ponderada)
+  **definição:** uma medida de completude em que cada campo contribui
+  uma fração diferente do total, de acordo com sua importância.
+  **como apareceu no projeto:** `EVIDENCE_WEIGHTS`, 16 itens somando
+  exatamente 1.0.
+
+- **termo:** Sample/evidence limitation (limitação de amostra/evidência)
+  **definição:** o reconhecimento de que uma quantidade pequena de
+  observações (avaliações, reviews) não deveria ser tratada com a
+  mesma confiança que uma quantidade grande.
+  **como apareceu no projeto:** o ajuste de credibilidade de
+  `supplier_rating` por `review_count`.
+
+- **termo:** Normalized rating (nota normalizada)
+  **definição:** uma nota convertida para uma escala padrão e
+  conhecida, em vez de aceita em qualquer escala arbitrária.
+  **como apareceu no projeto:** `supplier_rating` só é aceito em
+  escala 0-5 -- um contrato de entrada explícito, documentado como tal.
+
+- **termo:** Review-count context (contexto de número de avaliações)
+  **definição:** considerar quantas avaliações sustentam uma nota
+  antes de confiar na nota.
+  **como apareceu no projeto:** `RATING_CREDIBILITY_ANCHORS`.
+
+- **termo:** Provider-neutral model (modelo neutro em relação ao
+  provedor)
+  **definição:** um modelo de dados que não sabe nem se importa com a
+  origem dos dados (manual hoje, automatizada no futuro).
+  **como apareceu no projeto:** `SupplierInputs` inteiro.
+
+- **termo:** Deterministic supplier scoring (pontuação de fornecedor
+  determinística)
+  **definição:** um cálculo de pontuação de fornecedor cujo resultado
+  depende apenas da entrada -- sempre o mesmo para a mesma entrada.
+  **como apareceu no projeto:** `analyze_supplier()` inteiro, testado
+  com entradas idênticas produzindo resultados idênticos.
+
+### 7. Comandos/ferramentas usados
+
+```bash
+python -m src.main          # executar a CLI (opção 7 = Analyze Supplier)
+python -m pytest -v         # rodar todos os testes via módulo
+pytest -v                   # rodar todos os testes direto
+```
+
+Ferramentas: Python 3.12, `decimal.Decimal`, `dataclasses`, `pytest` --
+nenhuma dependência nova. Como a Fase 7, funciona 100% offline.
+
+### 8. Como explicar isso para um recrutador ou cliente
+
+"Eu construí um motor de avaliação de fornecedores determinístico que
+separa a qualidade do fornecedor da completude de evidência, modela
+MOQ, estoque, lead time e capacidades de fulfillment, preserva estados
+booleanos desconhecidos em vez de convertê-los para falso, e expõe
+bloqueadores operacionais separadamente da pontuação ponderada."
+
+Para defender essa frase numa entrevista:
+
+- "Separa qualidade do fornecedor de completude de evidência": um
+  fornecedor pode parecer ótimo com poucos dados conhecidos, ou
+  mediano com muitos dados conhecidos -- tratar isso como o mesmo
+  número esconderia o quão arriscada é a conclusão.
+- "Modela MOQ, estoque, lead time e capacidades de fulfillment": cada
+  um é uma restrição operacional diferente, com sua própria semântica
+  (MOQ não é estoque; prazo de despacho não é prazo de entrega) -- e
+  confundir qualquer par desses é um erro de modelagem real, não
+  cosmético.
+- "Preserva estados booleanos desconhecidos em vez de convertê-los
+  para falso": se eu não sei se o fornecedor tem nota fiscal, o
+  sistema não assume que não tem -- ele exclui esse sinal do cálculo e
+  avisa que está faltando.
+- "Expõe bloqueadores operacionais separadamente da pontuação
+  ponderada": um fornecedor com ótimos números pode estar, agora mesmo,
+  impossibilitado de vender (estoque zerado) -- uma média sozinha
+  esconderia isso; meu sistema mostra os dois fatos juntos, sempre.
+
+### 9. O que devo lembrar desta fase
+
+- **Um grande hambúrguer não vira uma franquia sem logística** -- um
+  produto bom com um fornecedor ruim continua sendo um negócio ruim;
+  por isso essa análise existe, separada de Demanda/Concorrência/
+  Margem.
+- **Nunca inferir de um anúncio de marketplace o que só uma
+  investigação de sourcing pode confirmar** -- essa é a regra mais
+  importante desta fase, e é arquitetural (nenhum import de
+  `src.integrations`), não só documental.
+- **Bloqueador e pontuação coexistem** -- um número alto nunca deveria
+  esconder um fato desqualificante; mostrar os dois juntos é mais
+  honesto do que escolher um dos dois.
+- **Nem toda condição ruim é um bloqueador** -- decidir isso exige
+  julgamento documentado (`dropshipping_supported == False` reduz a
+  pontuação, mas não bloqueia, porque compra em lote continua viável).
+- **Poucas avaliações não sustentam uma nota alta** -- um ajuste de
+  credibilidade simples e determinístico (encolher para o neutro 50)
+  resolve isso sem precisar de estatística sofisticada.
+- **Completude ponderada reflete melhor a realidade do que uma
+  contagem simples** quando os campos têm importância muito desigual
+  -- escolher ESSE desenho (em vez de copiar a fórmula de completude
+  mais simples da Fase 7) foi uma decisão deliberada, documentada, não
+  uma reutilização automática.

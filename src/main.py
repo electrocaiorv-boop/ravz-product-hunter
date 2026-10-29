@@ -2,7 +2,7 @@
 
 Phase 2: Manual Analyzer. Phase 3: Mercado Livre search. Phase 4: Trend
 analysis. Phase 5: Demand analysis. Phase 6: Competition analysis.
-Phase 7: Margin analysis.
+Phase 7: Margin analysis. Phase 8: Supplier analysis.
 
 This module is the presentation layer: it collects input from the user,
 delegates all scoring logic to src.models / src.scoring, all Mercado
@@ -10,9 +10,10 @@ Livre HTTP/JSON handling to src.integrations.mercadolivre, all Apify/trend
 HTTP/JSON handling to src.integrations.apify_trends, all trend-metric math
 to src.trend_analysis, all demand math to src.demand_models /
 src.demand_analysis, all competition math to src.competition_models /
-src.competition_analysis, and all margin/unit-economics math to
-src.margin_models / src.margin_analysis, then renders the result. It
-contains no scoring math and no HTTP logic of its own.
+src.competition_analysis, all margin/unit-economics math to
+src.margin_models / src.margin_analysis, and all supplier-viability math
+to src.supplier_models / src.supplier_analysis, then renders the result.
+It contains no scoring math and no HTTP logic of its own.
 
 Input-collecting functions accept an injectable `input_func` so the
 retry/validation logic can be unit tested without calling the real
@@ -36,6 +37,8 @@ from src.margin_analysis import analyze_margin
 from src.margin_models import MarginInputs
 from src.models import ComponentScores, Product
 from src.scoring import score_opportunity
+from src.supplier_analysis import analyze_supplier
+from src.supplier_models import SupplierInputs
 from src.trend_analysis import analyze_trend
 
 SCORE_FIELDS = (
@@ -79,10 +82,10 @@ def parse_non_empty_text(raw: str) -> str:
 
 
 def parse_menu_choice(raw: str) -> int:
-    """Validate that raw text is one of the main menu options (1-6)."""
+    """Validate that raw text is one of the main menu options (1-7)."""
     text = raw.strip()
-    if text not in {"1", "2", "3", "4", "5", "6"}:
-        raise ValueError("choose 1, 2, 3, 4, 5 or 6")
+    if text not in {"1", "2", "3", "4", "5", "6", "7"}:
+        raise ValueError("choose 1, 2, 3, 4, 5, 6 or 7")
     return int(text)
 
 
@@ -140,6 +143,74 @@ def parse_optional_rate(raw: str) -> Decimal | None:
     if not (0 <= value <= 1):
         raise ValueError(f"{value} must be between 0 and 1 (e.g. 0.12 for 12%)")
     return value
+
+
+def parse_optional_positive_money(raw: str) -> Decimal | None:
+    """Parse an optional monetary value that must be > 0 if given (e.g. minimum order value)."""
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        value = Decimal(text)
+    except InvalidOperation:
+        raise ValueError(f"'{raw}' is not a valid number")
+    if value <= 0:
+        raise ValueError(f"{value} must be greater than 0 (0 is not a meaningful minimum)")
+    return value
+
+
+def parse_optional_int(raw: str) -> int | None:
+    """Parse an optional non-negative whole number. Blank means unknown."""
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        value = int(text)
+    except ValueError:
+        raise ValueError(f"'{raw}' is not a whole number")
+    if value < 0:
+        raise ValueError(f"{value} must not be negative")
+    return value
+
+
+def parse_optional_moq(raw: str) -> int | None:
+    """Parse an optional MOQ (Minimum Order Quantity). Must be >= 1 if given."""
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        value = int(text)
+    except ValueError:
+        raise ValueError(f"'{raw}' is not a whole number")
+    if value < 1:
+        raise ValueError(f"{value} must be at least 1 (0 is not a meaningful minimum)")
+    return value
+
+
+def parse_optional_rating(raw: str) -> Decimal | None:
+    """Parse an optional supplier rating on a 0-5 scale. Blank means unknown."""
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        value = Decimal(text)
+    except InvalidOperation:
+        raise ValueError(f"'{raw}' is not a valid number")
+    if not (0 <= value <= 5):
+        raise ValueError(f"{value} must be on a 0-5 scale")
+    return value
+
+
+def parse_optional_bool(raw: str) -> bool | None:
+    """Parse a tri-state boolean: 'y' -> True, 'n' -> False, blank -> None (unknown)."""
+    text = raw.strip().lower()
+    if not text:
+        return None
+    if text == "y":
+        return True
+    if text == "n":
+        return False
+    raise ValueError("enter 'y', 'n', or leave blank if unknown")
 
 
 def ask_with_default(prompt_text: str, default: str, input_func=input) -> str:
@@ -715,6 +786,189 @@ def run_margin_analysis(input_func=input) -> None:
     print(format_margin_report(inputs, result))
 
 
+def format_supplier_report(inputs, result) -> str:
+    """Render SupplierInputs + SupplierAnalysisResult as a human-readable report.
+
+    Makes it obvious that unknown != bad (missing fields are shown as
+    "not available", never as a negative score) and that a high score
+    != high certainty (Supplier Score and Evidence Completeness are
+    always shown side by side, and a BLOCKED status is never hidden
+    inside an average).
+    """
+    lines = [
+        "=" * 50,
+        "SUPPLIER ANALYSIS REPORT (PROVISIONAL)",
+        "=" * 50,
+        f"Product: {result.product_name}",
+        f"Supplier: {result.supplier_name}",
+        "",
+        f"Supplier Score: {_format_optional(result.supplier_score)} "
+        "(PROVISIONAL -- business heuristic, not empirically validated)",
+        f"Supplier Evidence Completeness: {result.evidence_completeness_score:.2f}%",
+        f"Operational Status: {result.operational_status}",
+        "",
+        "Dimensions (None = excluded, not penalized):",
+        f"  Order flexibility:      {_format_optional(result.order_flexibility_score)}",
+        f"  Operational speed:      {_format_optional(result.operational_speed_score)}",
+        f"  Stock viability:        {_format_optional(result.stock_viability_score)}",
+        f"  Fulfillment capability: {_format_optional(result.fulfillment_capability_score)}",
+        f"  Trust/compliance:       {_format_optional(result.trust_score)}",
+        f"  Lead time (days):       {_format_optional(result.lead_time_days)}",
+    ]
+
+    lines.append("")
+    lines.append("Observed:")
+    for key, value in result.observed.items():
+        lines.append(f"  - {key}: {_format_optional(value)}")
+
+    lines.append("")
+    lines.append("Derived:")
+    for key, value in result.derived.items():
+        lines.append(f"  - {key}: {_format_optional(value)}")
+
+    lines.append("")
+    lines.append("Unavailable / unknown:")
+    for item in result.unavailable:
+        lines.append(f"  - {item}")
+
+    lines.append("")
+    lines.append("Blockers:")
+    if result.blockers:
+        for blocker in result.blockers:
+            lines.append(f"  - {blocker}")
+    else:
+        lines.append("  (none detected)")
+
+    if result.warnings:
+        lines.append("")
+        lines.append("Warnings:")
+        for warning in result.warnings:
+            lines.append(f"  - {warning}")
+
+    if result.notes:
+        lines.append("")
+        lines.append("Notes:")
+        for note in result.notes:
+            lines.append(f"  - {note}")
+
+    lines.append("")
+    lines.append(
+        "A Mercado Livre listing is NOT proof of wholesale/dropshipping capability -- "
+        "every field above must come from an explicit sourcing investigation."
+    )
+    lines.append(
+        "This Supplier Score is NOT fed into the Phase 1 Opportunity Scoring Engine yet."
+    )
+    lines.append("=" * 50)
+    return "\n".join(lines)
+
+
+def run_supplier_analysis(input_func=input) -> None:
+    """Run the Phase 8 supplier-analysis flow end to end.
+
+    Only product_name and supplier_name are mandatory. Every other
+    field accepts a blank answer for "unknown" -- blank is never
+    silently treated as False or zero.
+    """
+    print("\nAnalyze Supplier")
+    product_name = ask("Product name: ", parse_non_empty_text, input_func)
+    supplier_name = ask("Supplier name: ", parse_non_empty_text, input_func)
+
+    print(
+        "\nOptional fields -- leave blank if unknown. For yes/no fields: "
+        "'y' = yes, 'n' = no, blank = unknown (never forced to 'n'):"
+    )
+    unit_cost = ask("Unit cost (blank if unknown): ", parse_optional_money, input_func)
+    moq_units = ask("MOQ in units (blank if unknown): ", parse_optional_moq, input_func)
+    minimum_order_value = ask(
+        "Minimum order value (blank if unknown): ", parse_optional_positive_money, input_func
+    )
+    shipping_cost = ask(
+        "Shipping cost to seller (blank if unknown): ", parse_optional_money, input_func
+    )
+    payment_terms_days = ask(
+        "Payment terms, days (blank if unknown): ", parse_optional_int, input_func
+    )
+    stock_quantity = ask("Stock quantity (blank if unknown): ", parse_optional_int, input_func)
+    stock_available = ask(
+        "Stock currently available? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+    dispatch_time_days = ask(
+        "Dispatch time, days (blank if unknown): ", parse_optional_int, input_func
+    )
+    delivery_time_days = ask(
+        "Delivery time, days (blank if unknown): ", parse_optional_int, input_func
+    )
+    lead_time_days = ask(
+        "Explicit total lead time, days -- only if you did NOT give dispatch+delivery "
+        "above (blank if unknown): ",
+        parse_optional_int,
+        input_func,
+    )
+    tracking_available = ask(
+        "Tracking available? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+    dropshipping_supported = ask(
+        "Dropshipping supported? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+    blind_shipping_supported = ask(
+        "Blind shipping supported? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+    invoice_available = ask(
+        "Invoice available? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+    return_policy_available = ask(
+        "Return policy available? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+    business_verified = ask(
+        "Business registration verified? y/n (blank if unknown): ",
+        parse_optional_bool,
+        input_func,
+    )
+    contact_available = ask(
+        "Contact available? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+    supplier_rating = ask(
+        "Supplier rating, 0-5 scale (blank if unknown): ", parse_optional_rating, input_func
+    )
+    review_count = ask("Review count (blank if unknown): ", parse_optional_int, input_func)
+    years_active = ask("Years active (blank if unknown): ", parse_optional_int, input_func)
+
+    try:
+        inputs = SupplierInputs(
+            product_name=product_name,
+            supplier_name=supplier_name,
+            unit_cost=unit_cost,
+            moq_units=moq_units,
+            minimum_order_value=minimum_order_value,
+            shipping_cost=shipping_cost,
+            payment_terms_days=payment_terms_days,
+            stock_quantity=stock_quantity,
+            stock_available=stock_available,
+            dispatch_time_days=dispatch_time_days,
+            delivery_time_days=delivery_time_days,
+            lead_time_days=lead_time_days,
+            tracking_available=tracking_available,
+            dropshipping_supported=dropshipping_supported,
+            blind_shipping_supported=blind_shipping_supported,
+            invoice_available=invoice_available,
+            return_policy_available=return_policy_available,
+            business_verified=business_verified,
+            contact_available=contact_available,
+            supplier_rating=supplier_rating,
+            review_count=review_count,
+            years_active=years_active,
+        )
+    except ValueError as exc:
+        print(f"\nInvalid input: {exc}")
+        return
+
+    result = analyze_supplier(inputs)
+
+    print()
+    print(format_supplier_report(inputs, result))
+
+
 def main() -> None:
     print("RAVZ Product Hunter")
     print("1. Manual Product Analyzer")
@@ -723,8 +977,9 @@ def main() -> None:
     print("4. Analyze Demand")
     print("5. Analyze Competition")
     print("6. Analyze Margin")
+    print("7. Analyze Supplier")
 
-    choice = ask("Choose an option (1-6): ", parse_menu_choice)
+    choice = ask("Choose an option (1-7): ", parse_menu_choice)
 
     if choice == 1:
         run_manual_analyzer()
@@ -736,8 +991,10 @@ def main() -> None:
         run_demand_analysis()
     elif choice == 5:
         run_competition_analysis()
-    else:
+    elif choice == 6:
         run_margin_analysis()
+    else:
+        run_supplier_analysis()
 
 
 if __name__ == "__main__":

@@ -18,11 +18,17 @@ from src.main import (
     format_margin_report,
     format_report,
     format_search_results,
+    format_supplier_report,
     format_trend_report,
     parse_menu_choice,
     parse_non_empty_text,
+    parse_optional_bool,
+    parse_optional_int,
     parse_optional_money,
+    parse_optional_moq,
+    parse_optional_positive_money,
     parse_optional_rate,
+    parse_optional_rating,
     parse_required_non_negative_money,
     parse_required_positive_money,
     parse_score,
@@ -31,12 +37,15 @@ from src.main import (
     run_demand_analysis,
     run_margin_analysis,
     run_mercado_livre_search,
+    run_supplier_analysis,
     run_trend_analysis,
 )
 from src.margin_analysis import analyze_margin
 from src.margin_models import MarginInputs
 from src.models import ComponentScores, Product
 from src.scoring import score_opportunity
+from src.supplier_analysis import analyze_supplier
+from src.supplier_models import SupplierInputs
 from src.trend_analysis import analyze_trend
 from src.trend_models import RelatedQuery, TrendData, TrendPoint, TrendRegion
 
@@ -148,13 +157,60 @@ def test_recommend_handles_unknown_classification():
 def test_parse_menu_choice_accepts_valid_options():
     assert parse_menu_choice("1") == 1
     assert parse_menu_choice("2") == 2
-    assert parse_menu_choice(" 6 ") == 6
+    assert parse_menu_choice(" 7 ") == 7
 
 
-@pytest.mark.parametrize("raw", ["0", "7", "abc", ""])
+@pytest.mark.parametrize("raw", ["0", "8", "abc", ""])
 def test_parse_menu_choice_rejects_invalid_options(raw):
     with pytest.raises(ValueError):
         parse_menu_choice(raw)
+
+
+def test_parse_optional_positive_money_blank_is_none():
+    assert parse_optional_positive_money("") is None
+
+
+def test_parse_optional_positive_money_rejects_zero_and_negative():
+    with pytest.raises(ValueError):
+        parse_optional_positive_money("0")
+    with pytest.raises(ValueError):
+        parse_optional_positive_money("-5")
+
+
+def test_parse_optional_int_blank_is_none():
+    assert parse_optional_int("") is None
+
+
+def test_parse_optional_int_rejects_negative():
+    with pytest.raises(ValueError):
+        parse_optional_int("-1")
+
+
+def test_parse_optional_moq_rejects_zero():
+    with pytest.raises(ValueError):
+        parse_optional_moq("0")
+
+
+def test_parse_optional_moq_accepts_one():
+    assert parse_optional_moq("1") == 1
+
+
+def test_parse_optional_rating_validates_0_to_5_scale():
+    assert parse_optional_rating("4.5") == Decimal("4.5")
+    with pytest.raises(ValueError):
+        parse_optional_rating("6")
+
+
+def test_parse_optional_bool_tristate():
+    assert parse_optional_bool("y") is True
+    assert parse_optional_bool("n") is False
+    assert parse_optional_bool("") is None
+    assert parse_optional_bool("Y") is True
+
+
+def test_parse_optional_bool_rejects_other_input():
+    with pytest.raises(ValueError):
+        parse_optional_bool("maybe")
 
 
 def test_parse_required_positive_money_valid():
@@ -566,3 +622,77 @@ def test_run_margin_analysis_reports_conflicting_inputs_without_crashing(capsys)
     captured = capsys.readouterr()
     assert "Invalid input" in captured.out
     assert "MARGIN ANALYSIS REPORT" not in captured.out
+
+
+def _make_supplier_inputs(**overrides):
+    base = dict(
+        product_name="Bebedouro",
+        supplier_name="Fornecedor A",
+        moq_units=1,
+        dispatch_time_days=1,
+        delivery_time_days=2,
+        dropshipping_supported=True,
+    )
+    base.update(overrides)
+    return SupplierInputs(**base)
+
+
+def test_format_supplier_report_contains_key_sections():
+    inputs = _make_supplier_inputs()
+    result = analyze_supplier(inputs)
+    report = format_supplier_report(inputs, result)
+
+    assert "Bebedouro" in report
+    assert "Fornecedor A" in report
+    assert "SUPPLIER ANALYSIS REPORT" in report
+    assert "PROVISIONAL" in report
+    assert "Supplier Evidence Completeness" in report
+    assert "Operational Status:" in report
+    assert "Order flexibility:" in report
+    assert "Operational speed:" in report
+    assert "Stock viability:" in report
+    assert "Fulfillment capability:" in report
+    assert "Trust/compliance:" in report
+    assert "Blockers:" in report
+    assert "NOT proof of wholesale/dropshipping capability" in report
+    assert "NOT fed into the Phase 1 Opportunity Scoring Engine" in report
+
+
+def test_run_supplier_analysis_happy_path(capsys):
+    fake_input = make_input(
+        [
+            "Bebedouro", "Fornecedor A",
+            "", "1", "", "", "",
+            "", "",
+            "", "", "",
+            "",
+            "", "",
+            "", "", "", "",
+            "", "", "",
+        ]
+    )
+    run_supplier_analysis(fake_input)
+
+    captured = capsys.readouterr()
+    assert "SUPPLIER ANALYSIS REPORT" in captured.out
+    assert "Fornecedor A" in captured.out
+
+
+def test_run_supplier_analysis_reports_conflicting_lead_time_without_crashing(capsys):
+    fake_input = make_input(
+        [
+            "Bebedouro", "Fornecedor A",
+            "", "", "", "", "",
+            "", "",
+            "5", "5", "10",
+            "",
+            "", "",
+            "", "", "", "",
+            "", "", "",
+        ]
+    )
+    run_supplier_analysis(fake_input)
+
+    captured = capsys.readouterr()
+    assert "Invalid input" in captured.out
+    assert "SUPPLIER ANALYSIS REPORT" not in captured.out

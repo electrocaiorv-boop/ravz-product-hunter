@@ -753,6 +753,117 @@ Analysis in isolation.
   percentage is ever assumed.
 - Not validated against real outcomes.
 
+## Phase 8 scope
+
+Phase 8 adds a deterministic **Supplier Analysis** layer. It answers
+*"can I realistically source this product from this supplier under
+acceptable commercial and operational conditions?"* — distinct from
+Demand, Competition, and Margin. No scraping, no supplier integration
+yet: every field is explicit, manually-supplied input, same strategy
+as Phase 7.
+
+### A Mercado Livre seller is NOT a supplier
+
+A retail marketplace listing is never proof of wholesale availability,
+dropshipping support, stable supply, resale authorization, stock
+continuity, invoice issuance, or acceptable lead time. Neither
+`src/supplier_models.py` nor `src/supplier_analysis.py` imports
+anything from `src.integrations` — this is an architectural guardrail,
+not just a comment.
+
+### Boolean tri-state, preserved throughout
+
+Every yes/no field is `True` / `False` / `None` — verified-yes,
+verified-no, or unknown. `invoice_available = False` means "we checked,
+they don't issue invoices"; `None` means "we haven't checked." Unknown
+booleans are **excluded** from scoring, never scored as a negative.
+
+### Supplier Score vs. Evidence Completeness
+
+Same separation as every prior phase's two-score pattern:
+`Supplier Score: 85, Evidence Completeness: 35` means the little we
+know looks excellent; `Supplier Score: 50, Evidence Completeness: 95`
+means we know a lot and it's mediocre. Completeness here is
+**weighted**, not a flat count — knowing the supplier's name matters
+far less than knowing MOQ, stock, dispatch timing, dropshipping
+capability, or invoice status, so those get the highest of 16 weights
+summing to exactly 1.0.
+
+### Hard blockers shown alongside the score, never hidden inside it
+
+```
+Supplier Score: 82
+Operational Status: BLOCKED
+Reason: stock_quantity (10) is below moq_units (500)
+```
+Two conditions are true hard blockers: known-zero/unavailable stock,
+and known stock below a known MOQ. `dropshipping_supported == False`
+is deliberately **not** a blocker (bulk purchase + self-fulfillment
+remains viable) — it lowers `fulfillment_capability_score` instead.
+
+### Lead time: no double counting
+
+`dispatch_time_days` (time before shipment leaves) ≠
+`delivery_time_days` (transport time after) ≠ `lead_time_days` (the
+total). If both dispatch and delivery are known, they're summed. An
+explicit `lead_time_days` supplied together with *both* is rejected at
+construction — ambiguous double representation of the same total.
+
+### Rating credibility — a 5.0 with 2 reviews ≠ a 4.8 with 10,000
+
+```
+credibility = piecewise-linear over review_count (0/unknown -> 0.1, 200+ -> 1.0)
+effective_rating = 50 + credibility * (normalized_rating - 50)
+```
+A high rating with few/unknown reviews shrinks toward the neutral
+midpoint instead of being trusted at face value — a simple,
+deterministic confidence adjustment, not fabricated statistics.
+
+### Score dimensions (base weights, renormalized over what's known)
+
+| Dimension | Weight | From |
+|---|---|---|
+| Order flexibility | 0.25 | MOQ and/or minimum order value |
+| Operational speed | 0.20 | derived lead time |
+| Stock viability | 0.20 | stock quantity/availability vs. MOQ |
+| Fulfillment capability | 0.15 | dropshipping (50%) / blind shipping (25%) / tracking (25%) |
+| Trust/compliance | 0.20 | invoice/return policy/verification/contact + credibility-adjusted rating |
+
+### What's new
+
+- `src/supplier_models.py` — `SupplierInputs`
+- `src/supplier_analysis.py` — `SupplierAnalysisResult`, `analyze_supplier()`
+- `src/main.py` — CLI option `7. Analyze Supplier`
+- `tests/test_supplier_models.py`, `tests/test_supplier_analysis.py`
+
+### Run it
+
+```bash
+python -m src.main
+```
+Choose option `7`. Only product name and supplier name are mandatory;
+every other prompt accepts `y`/`n`/blank or a blank number for unknown.
+
+### Important design rule
+
+The Supplier Score is **not** fed into the Phase 1 Opportunity Scoring
+Engine yet — this phase only builds and validates Supplier Analysis in
+isolation. It also never duplicates Margin Analysis: `unit_cost` is
+recorded as sourcing evidence only, never turned into a profitability
+verdict here.
+
+### Limitations
+
+- `supplier_score` requires ≥35% weighted evidence completeness — a
+  provisional, documented, independently-chosen threshold (different
+  from Phase 7's 50%, since supplier evidence is inherently sparser).
+- All score anchors, weights, and the blocker set are configurable
+  heuristics, explicitly not proven business rules.
+- `price_stability`/`catalog_stability`/`historical_fulfillment_rate`
+  are intentionally unimplemented — no historical observations exist
+  to support them; never inferred from a single snapshot.
+- Not validated against real outcomes.
+
 ## Architecture direction
 
 The system is designed to grow into an orchestrator coordinating
@@ -835,9 +946,10 @@ root, so `src` resolves as a package whether you run `pytest` or
 14. Continuous improvement
 
 Phase 4 (deterministic trend analysis), Phase 5 (deterministic Demand
-Analysis), Phase 6 (deterministic Competition Analysis), and Phase 7
-(deterministic Margin Analysis, described above) are layered on top of
-steps 5-8 — real external integrations plus the deterministic
-groundwork for the eventual Trend, Demand, Competition, and Margin
-Agents' contributions to the Opportunity Scoring Engine. Phase 7 is the
-current phase.
+Analysis), Phase 6 (deterministic Competition Analysis), Phase 7
+(deterministic Margin Analysis), and Phase 8 (deterministic Supplier
+Analysis, described above) are layered on top of steps 5-9 — real
+external integrations plus the deterministic groundwork for the
+eventual Trend, Demand, Competition, Margin, and Supplier Agents'
+contributions to the Opportunity Scoring Engine. Phase 8 is the current
+phase.
