@@ -8,6 +8,8 @@ from src.demand_analysis import analyze_demand
 from src.demand_models import DemandSignals
 from src.integrations.apify_trends import ApifyTrendsResponseError
 from src.integrations.mercadolivre import MercadoLivreItem, MercadoLivreResponseError
+from src.logistics_analysis import analyze_logistics
+from src.logistics_models import LogisticsInputs
 from src.main import (
     ask,
     ask_with_default,
@@ -15,6 +17,7 @@ from src.main import (
     collect_scores,
     format_competition_report,
     format_demand_report,
+    format_logistics_report,
     format_margin_report,
     format_report,
     format_search_results,
@@ -35,6 +38,7 @@ from src.main import (
     recommend,
     run_competition_analysis,
     run_demand_analysis,
+    run_logistics_analysis,
     run_margin_analysis,
     run_mercado_livre_search,
     run_supplier_analysis,
@@ -158,9 +162,10 @@ def test_parse_menu_choice_accepts_valid_options():
     assert parse_menu_choice("1") == 1
     assert parse_menu_choice("2") == 2
     assert parse_menu_choice(" 7 ") == 7
+    assert parse_menu_choice("8") == 8
 
 
-@pytest.mark.parametrize("raw", ["0", "8", "abc", ""])
+@pytest.mark.parametrize("raw", ["0", "9", "abc", ""])
 def test_parse_menu_choice_rejects_invalid_options(raw):
     with pytest.raises(ValueError):
         parse_menu_choice(raw)
@@ -696,3 +701,68 @@ def test_run_supplier_analysis_reports_conflicting_lead_time_without_crashing(ca
     captured = capsys.readouterr()
     assert "Invalid input" in captured.out
     assert "SUPPLIER ANALYSIS REPORT" not in captured.out
+
+
+def _make_logistics_inputs(**overrides):
+    base = dict(product_name="Phone case", weight_kg=Decimal("0.1"))
+    base.update(overrides)
+    return LogisticsInputs(**base)
+
+
+def test_format_logistics_report_contains_key_sections():
+    inputs = _make_logistics_inputs()
+    result = analyze_logistics(inputs)
+    report = format_logistics_report(inputs, result)
+
+    assert "Phone case" in report
+    assert "LOGISTICS ANALYSIS REPORT" in report
+    assert "PROVISIONAL" in report
+    assert "0 = operationally difficult, 100 = easy/favorable" in report
+    assert "Logistics Evidence Completeness" in report
+    assert "Operational Status:" in report
+    assert "Physical ease:" in report
+    assert "Handling ease:" in report
+    assert "Delivery convenience:" in report
+    assert "Fulfillment support:" in report
+    assert "Shipping support:" in report
+    assert "Reference billable weight (kg, NOT a real carrier charge):" in report
+    assert "Blockers:" in report
+    assert "CUSTOMER-facing delivery leg, not Phase 8's" in report
+    assert "NOT fed into the Phase 1 Opportunity Scoring Engine" in report
+
+
+def test_run_logistics_analysis_happy_path(capsys):
+    fake_input = make_input(
+        [
+            "Phone case", "0.1", "15", "8", "1", "",
+            "n", "n", "n", "n", "n", "y", "n",
+            "", "",
+            "y", "", "",
+            "", "2", "y", "y",
+            "", "",
+        ]
+    )
+    run_logistics_analysis(fake_input)
+
+    captured = capsys.readouterr()
+    assert "LOGISTICS ANALYSIS REPORT" in captured.out
+    assert "Phone case" in captured.out
+
+
+def test_run_logistics_analysis_reprompts_on_invalid_input_then_succeeds(capsys):
+    fake_input = make_input(
+        [
+            "Mirror", "-1", "0.5", "", "", "", "",
+            "", "", "", "", "", "", "",
+            "", "",
+            "", "", "",
+            "", "", "", "",
+            "", "",
+        ]
+    )
+    run_logistics_analysis(fake_input)
+
+    captured = capsys.readouterr()
+    assert "Invalid input" in captured.out
+    assert "LOGISTICS ANALYSIS REPORT" in captured.out
+    assert "Mirror" in captured.out

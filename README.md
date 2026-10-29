@@ -864,6 +864,132 @@ verdict here.
   to support them; never inferred from a single snapshot.
 - Not validated against real outcomes.
 
+## Phase 9 scope
+
+Phase 9 adds a deterministic **Logistics Analysis** layer. It answers
+*"how operationally difficult is this product to move from source to
+customer — can we store, handle, ship, and deliver it efficiently and
+safely?"* — distinct from Demand, Competition, Margin (financial
+viability), and Supplier (sourcing reliability). No carrier integration
+yet: every field is explicit, manually-supplied input, same strategy as
+Phase 7/8.
+
+### Score direction is inverted from the other phases' internal framing
+
+`logistics_score`: **0 = operationally difficult, 100 = easy/favorable**
+— matching Phase 1's existing convention of treating logistics as a
+positive dimension. Internally, several sub-scores are computed as an
+"ease" value directly from anchors (never a "burden" computed first and
+left un-inverted), documented per dimension in
+`src/logistics_analysis.py`.
+
+### Customer delivery time ≠ supplier lead time
+
+`estimated_delivery_days` here is the **last-mile** leg (seller/warehouse
+to customer) — a different leg of the journey from Phase 8's
+`lead_time_days`/`dispatch_time_days`/`delivery_time_days` (supplier to
+seller). `src/logistics_models.py` and `src/logistics_analysis.py` never
+import anything from `src.supplier_models`/`src.supplier_analysis`, and
+there is no `sale_price` field at all — so a margin/profitability
+calculation is architecturally impossible here, not just discouraged.
+
+### Package volume, dimensional weight, and "reference" billable weight
+
+```
+package_volume_cm3 = length_cm * width_cm * height_cm   (all 3 or none)
+volume_liters       = package_volume_cm3 / 1000
+dimensional_weight_kg = package_volume_cm3 / dimensional_weight_divisor
+                        (only if an explicit divisor is supplied —
+                        never a hardcoded universal constant; real
+                        carriers use different divisors, e.g. 5000/6000)
+reference_billable_weight_kg = max(weight_kg, dimensional_weight_kg)
+                        (explicitly labeled "reference" everywhere —
+                        NEVER presented as a real carrier charge)
+```
+
+### Observed rate vs. inferred risk indicator — never blended
+
+`observed_damage_rate` / `observed_return_rate` are real historical
+observations (e.g. "3 of 40 shipments arrived damaged" → 0.075).
+`fragile`/`hazardous`/etc. are property flags that inform
+`handling_ease_score`, a risk *indicator* — never a probability. The two
+never feed each other: a `fragile=True` flag never fabricates a damage
+rate, and an observed rate is never derived from a property flag.
+
+### Hard blockers: none are currently reachable, by design
+
+A hard blocker must mean "we have evidence the operation is currently
+**impossible**," not "we have evidence the operation went badly." An
+earlier draft of this phase treated an observed damage/return rate ≥
+50% as a blocker — a hardening-review correction caught this as a
+semantic bug: a 55% observed damage rate means "historical performance
+here is extremely poor," not "shipping is impossible" (the 45% that
+*did* arrive fine is direct proof otherwise). Compare with Phase 8's
+`stock_quantity == 0`, which *is* a genuine blocker — zero stock really
+does make a sale currently impossible, no exceptions.
+
+`_detect_blockers()` therefore always returns an empty list today, and
+`BLOCKED` is consequently **unreachable** from any current input
+combination — kept in the status vocabulary as a reserved extension
+point for a future field that can genuinely prove impossibility, not
+removed outright. A severe (≥ 50%) observed damage/return rate instead
+produces a **warning** and forces `operational_status` to at least
+`CAUTION`, without touching `logistics_score`'s own calculation. Every
+other risky combination (e.g. `temperature_sensitive=True` with a long
+`estimated_delivery_days`) also produces a warning, never a blocker —
+same "prefer CAUTION over an unproven BLOCKED" principle, applied
+consistently. A severe warning is shown **alongside** the score, same
+as Phase 8's blocker pattern — a high `logistics_score` next to
+`Operational Status: CAUTION` is honest (the measurable dimensions
+looked fine; a real observed failure rate still means this needs
+attention).
+
+### Score dimensions (base weights, renormalized over what's known)
+
+| Dimension | Weight | From |
+|---|---|---|
+| Physical ease | 0.30 | weight/size (prefers reference billable weight over raw weight when both volume and weight are known) |
+| Handling ease | 0.25 | fragile/liquid/hazardous/perishable/temperature-sensitive/special-handling/stackable |
+| Delivery convenience | 0.20 | estimated_delivery_days (customer-facing) |
+| Fulfillment support | 0.15 | supplier/seller fulfilled, warehouse required |
+| Shipping support | 0.10 | tracking/insurance available |
+
+### What's new
+
+- `src/logistics_models.py` — `LogisticsInputs`
+- `src/logistics_analysis.py` — `LogisticsAnalysisResult`, `analyze_logistics()`
+- `src/main.py` — CLI option `8. Analyze Logistics`
+- `tests/test_logistics_models.py`, `tests/test_logistics_analysis.py`
+
+### Run it
+
+```bash
+python -m src.main
+```
+Choose option `8`. Only product name is mandatory; every other prompt
+accepts `y`/`n`/blank or a blank number for unknown.
+
+### Important design rule
+
+The Logistics Score is **not** fed into the Phase 1 Opportunity Scoring
+Engine yet — this phase only builds and validates Logistics Analysis in
+isolation. It never duplicates Supplier Analysis (no lead-time fields)
+or Margin Analysis (no `sale_price` field, no profitability math).
+
+### Limitations
+
+- `logistics_score` requires ≥40% weighted evidence completeness — a
+  provisional, independently-chosen threshold (different from Phase 7's
+  50% and Phase 8's 35%).
+- All score anchors, weights, and the severe-warning threshold are
+  configurable heuristics, explicitly not proven carrier/business rules.
+- `BLOCKED` is currently unreachable (see "Hard blockers" above) —
+  not a missing feature, a deliberate consequence of what this phase's
+  fields can and cannot prove.
+- `dimensional_weight_divisor` must be explicitly supplied by the user;
+  no universal divisor is assumed.
+- Not validated against real outcomes.
+
 ## Architecture direction
 
 The system is designed to grow into an orchestrator coordinating

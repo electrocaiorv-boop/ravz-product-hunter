@@ -2,7 +2,8 @@
 
 Phase 2: Manual Analyzer. Phase 3: Mercado Livre search. Phase 4: Trend
 analysis. Phase 5: Demand analysis. Phase 6: Competition analysis.
-Phase 7: Margin analysis. Phase 8: Supplier analysis.
+Phase 7: Margin analysis. Phase 8: Supplier analysis. Phase 9:
+Logistics analysis.
 
 This module is the presentation layer: it collects input from the user,
 delegates all scoring logic to src.models / src.scoring, all Mercado
@@ -11,8 +12,9 @@ HTTP/JSON handling to src.integrations.apify_trends, all trend-metric math
 to src.trend_analysis, all demand math to src.demand_models /
 src.demand_analysis, all competition math to src.competition_models /
 src.competition_analysis, all margin/unit-economics math to
-src.margin_models / src.margin_analysis, and all supplier-viability math
-to src.supplier_models / src.supplier_analysis, then renders the result.
+src.margin_models / src.margin_analysis, all supplier-viability math to
+src.supplier_models / src.supplier_analysis, and all logistics math to
+src.logistics_models / src.logistics_analysis, then renders the result.
 It contains no scoring math and no HTTP logic of its own.
 
 Input-collecting functions accept an injectable `input_func` so the
@@ -33,6 +35,8 @@ from src.integrations.apify_trends import (
     fetch_trend_data,
 )
 from src.integrations.mercadolivre import MercadoLivreError, search_products
+from src.logistics_analysis import analyze_logistics
+from src.logistics_models import LogisticsInputs
 from src.margin_analysis import analyze_margin
 from src.margin_models import MarginInputs
 from src.models import ComponentScores, Product
@@ -82,10 +86,10 @@ def parse_non_empty_text(raw: str) -> str:
 
 
 def parse_menu_choice(raw: str) -> int:
-    """Validate that raw text is one of the main menu options (1-7)."""
+    """Validate that raw text is one of the main menu options (1-8)."""
     text = raw.strip()
-    if text not in {"1", "2", "3", "4", "5", "6", "7"}:
-        raise ValueError("choose 1, 2, 3, 4, 5, 6 or 7")
+    if text not in {"1", "2", "3", "4", "5", "6", "7", "8"}:
+        raise ValueError("choose 1, 2, 3, 4, 5, 6, 7 or 8")
     return int(text)
 
 
@@ -969,6 +973,197 @@ def run_supplier_analysis(input_func=input) -> None:
     print(format_supplier_report(inputs, result))
 
 
+def format_logistics_report(inputs, result) -> str:
+    """Render LogisticsInputs + LogisticsAnalysisResult as a human-readable report.
+
+    Makes it obvious that unknown != bad (missing fields are shown as
+    "not available", never scored as a negative) and that a high
+    Logistics Score != high evidence completeness -- the two are
+    always shown side by side.
+    """
+    lines = [
+        "=" * 50,
+        "LOGISTICS ANALYSIS REPORT (PROVISIONAL)",
+        "=" * 50,
+        f"Product: {result.product_name}",
+        "",
+        f"Logistics Score: {_format_optional(result.logistics_score)} "
+        "(PROVISIONAL -- 0 = operationally difficult, 100 = easy/favorable; "
+        "business heuristic, not empirically validated)",
+        f"Logistics Evidence Completeness: {result.evidence_completeness_score:.2f}%",
+        f"Operational Status: {result.operational_status}",
+        "",
+        "Dimensions (None = excluded, not penalized):",
+        f"  Physical ease:          {_format_optional(result.physical_ease_score)}",
+        f"  Handling ease:          {_format_optional(result.handling_ease_score)}",
+        f"  Delivery convenience:   {_format_optional(result.delivery_convenience_score)}",
+        f"  Fulfillment support:    {_format_optional(result.fulfillment_support_score)}",
+        f"  Shipping support:       {_format_optional(result.shipping_support_score)}",
+        "",
+        f"Package volume (cm3):   {_format_optional(result.package_volume_cm3)}",
+        f"Volume (liters):        {_format_optional(result.volume_liters)}",
+        f"Dimensional weight (kg): {_format_optional(result.dimensional_weight_kg)}",
+        f"Reference billable weight (kg, NOT a real carrier charge): "
+        f"{_format_optional(result.reference_billable_weight_kg)}",
+    ]
+
+    lines.append("")
+    lines.append("Observed:")
+    for key, value in result.observed.items():
+        lines.append(f"  - {key}: {_format_optional(value)}")
+
+    lines.append("")
+    lines.append("Derived:")
+    for key, value in result.derived.items():
+        lines.append(f"  - {key}: {_format_optional(value)}")
+
+    lines.append("")
+    lines.append("Unavailable / unknown:")
+    for item in result.unavailable:
+        lines.append(f"  - {item}")
+
+    lines.append("")
+    lines.append("Blockers:")
+    if result.blockers:
+        for blocker in result.blockers:
+            lines.append(f"  - {blocker}")
+    else:
+        lines.append("  (none detected)")
+
+    if result.warnings:
+        lines.append("")
+        lines.append("Warnings:")
+        for warning in result.warnings:
+            lines.append(f"  - {warning}")
+
+    if result.notes:
+        lines.append("")
+        lines.append("Notes:")
+        for note in result.notes:
+            lines.append(f"  - {note}")
+
+    lines.append("")
+    lines.append(
+        "estimated_delivery_days is the CUSTOMER-facing delivery leg, not Phase 8's "
+        "supplier lead time -- the two are never interchangeable."
+    )
+    lines.append(
+        "This Logistics Score is NOT fed into the Phase 1 Opportunity Scoring Engine yet."
+    )
+    lines.append("=" * 50)
+    return "\n".join(lines)
+
+
+def run_logistics_analysis(input_func=input) -> None:
+    """Run the Phase 9 logistics-analysis flow end to end.
+
+    Only product_name is mandatory. Every other field accepts a blank
+    answer for "unknown" -- blank is never silently treated as False
+    or zero.
+    """
+    print("\nAnalyze Logistics")
+    product_name = ask("Product name: ", parse_non_empty_text, input_func)
+
+    print("\nPhysical -- leave blank if unknown:")
+    weight_kg = ask("Weight, kg (blank if unknown): ", parse_optional_positive_money, input_func)
+    length_cm = ask("Length, cm (blank if unknown): ", parse_optional_positive_money, input_func)
+    width_cm = ask("Width, cm (blank if unknown): ", parse_optional_positive_money, input_func)
+    height_cm = ask("Height, cm (blank if unknown): ", parse_optional_positive_money, input_func)
+    dimensional_weight_divisor = ask(
+        "Dimensional weight divisor, carrier-specific (blank if unknown): ",
+        parse_optional_positive_money,
+        input_func,
+    )
+
+    print("\nHandling -- y/n/blank:")
+    fragile = ask("Fragile? y/n (blank if unknown): ", parse_optional_bool, input_func)
+    liquid = ask("Liquid? y/n (blank if unknown): ", parse_optional_bool, input_func)
+    hazardous = ask("Hazardous? y/n (blank if unknown): ", parse_optional_bool, input_func)
+    perishable = ask("Perishable? y/n (blank if unknown): ", parse_optional_bool, input_func)
+    temperature_sensitive = ask(
+        "Temperature sensitive? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+    stackable = ask("Stackable? y/n (blank if unknown): ", parse_optional_bool, input_func)
+    requires_special_handling = ask(
+        "Requires special handling? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+
+    print("\nPackaging:")
+    extra_packaging_required = ask(
+        "Extra packaging required? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+    packaging_cost = ask("Packaging cost (blank if unknown): ", parse_optional_money, input_func)
+
+    print("\nFulfillment:")
+    supplier_fulfilled = ask(
+        "Supplier fulfilled? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+    seller_fulfilled = ask(
+        "Seller fulfilled? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+    warehouse_required = ask(
+        "Warehouse required? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+
+    print("\nShipping (customer-facing delivery, not supplier lead time):")
+    known_shipping_cost = ask(
+        "Known shipping cost (blank if unknown): ", parse_optional_money, input_func
+    )
+    estimated_delivery_days = ask(
+        "Estimated delivery days (blank if unknown): ", parse_optional_int, input_func
+    )
+    tracking_available = ask(
+        "Tracking available? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+    insurance_available = ask(
+        "Insurance available? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+
+    print("\nObserved history -- real historical rates only, never estimated:")
+    observed_damage_rate = ask(
+        "Observed damage rate, 0-1 (blank if unknown): ", parse_optional_rate, input_func
+    )
+    observed_return_rate = ask(
+        "Observed return rate, 0-1 (blank if unknown): ", parse_optional_rate, input_func
+    )
+
+    try:
+        inputs = LogisticsInputs(
+            product_name=product_name,
+            weight_kg=weight_kg,
+            length_cm=length_cm,
+            width_cm=width_cm,
+            height_cm=height_cm,
+            dimensional_weight_divisor=dimensional_weight_divisor,
+            fragile=fragile,
+            liquid=liquid,
+            hazardous=hazardous,
+            perishable=perishable,
+            temperature_sensitive=temperature_sensitive,
+            stackable=stackable,
+            requires_special_handling=requires_special_handling,
+            extra_packaging_required=extra_packaging_required,
+            packaging_cost=packaging_cost,
+            supplier_fulfilled=supplier_fulfilled,
+            seller_fulfilled=seller_fulfilled,
+            warehouse_required=warehouse_required,
+            known_shipping_cost=known_shipping_cost,
+            estimated_delivery_days=estimated_delivery_days,
+            tracking_available=tracking_available,
+            insurance_available=insurance_available,
+            observed_damage_rate=observed_damage_rate,
+            observed_return_rate=observed_return_rate,
+        )
+    except ValueError as exc:
+        print(f"\nInvalid input: {exc}")
+        return
+
+    result = analyze_logistics(inputs)
+
+    print()
+    print(format_logistics_report(inputs, result))
+
+
 def main() -> None:
     print("RAVZ Product Hunter")
     print("1. Manual Product Analyzer")
@@ -978,8 +1173,9 @@ def main() -> None:
     print("5. Analyze Competition")
     print("6. Analyze Margin")
     print("7. Analyze Supplier")
+    print("8. Analyze Logistics")
 
-    choice = ask("Choose an option (1-7): ", parse_menu_choice)
+    choice = ask("Choose an option (1-8): ", parse_menu_choice)
 
     if choice == 1:
         run_manual_analyzer()
@@ -993,8 +1189,10 @@ def main() -> None:
         run_competition_analysis()
     elif choice == 6:
         run_margin_analysis()
-    else:
+    elif choice == 7:
         run_supplier_analysis()
+    else:
+        run_logistics_analysis()
 
 
 if __name__ == "__main__":

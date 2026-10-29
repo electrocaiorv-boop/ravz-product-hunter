@@ -479,6 +479,115 @@ Mercado Livre, no Apify, no scraping. `src/supplier_models.py` and
 - [ ] Regression tests: full suite still passing
       (`python -m pytest -v` and `pytest -v`)
 
+### Logistics Analysis inputs (Phase 9)
+
+Phase 9, like Phase 7 and Phase 8, has NO live external dependency --
+no HTTP, no Mercado Livre, no Apify, no carrier API, no scraping.
+`src/logistics_models.py` and `src/logistics_analysis.py` operate
+entirely on explicit user input.
+
+- [ ] **`LogisticsInputs` schema**: re-confirm all 22 optional fields
+      still match `src/logistics_models.py`'s field list and docstring
+      if the model is ever extended
+- [ ] **Measurement units**: `weight_kg`, `length_cm`/`width_cm`/
+      `height_cm` -- re-confirm the unit stays in the field name and is
+      never mixed; zero and negative values must remain rejected for
+      these (0 is not a meaningful physical measurement)
+- [ ] **Weight semantics**: `weight_kg` (actual/measured) vs.
+      `dimensional_weight_kg` (calculated from volume) vs.
+      `reference_billable_weight_kg` (max of the two, labeled
+      "reference") -- re-confirm these three stay distinct fields,
+      never merged or silently substituted for one another
+- [ ] **Dimensional fields**: re-confirm `package_volume_cm3` is
+      computed ONLY when `length_cm`/`width_cm`/`height_cm` are ALL
+      known -- a partial set of dimensions must still produce `None`,
+      never a guessed/partial volume
+- [ ] **Volume calculation**: re-confirm `volume_liters =
+      package_volume_cm3 / 1000` stays correct and that `cm3`/`liters`
+      are never confused as the same value in reports or tests
+- [ ] **Dimensional-weight policy**: re-confirm
+      `dimensional_weight_divisor` remains an OPTIONAL, EXPLICIT,
+      user-supplied input -- NEVER hardcoded to a "universal" value
+      (e.g. 5000 or 6000); if the divisor isn't supplied, dimensional
+      weight must stay `None`, not computed with a guessed value
+- [ ] **Carrier-specific-rule warning**: re-confirm
+      `reference_billable_weight_kg` and any related text in
+      `format_logistics_report` still explicitly labels the value as a
+      "reference," never as a real carrier charge
+- [ ] **Tri-state booleans**: re-run the parametrized
+      `test_*_fields_accept_true_false_and_none` tests in
+      `tests/test_logistics_models.py` after any refactor -- these are
+      the tests most likely to silently break if someone "simplifies"
+      `None`-handling into `False` later
+- [ ] **Handling-risk logic**: re-confirm `handling_ease_score` (an
+      INDICATOR from property flags like `fragile`/`hazardous`) and
+      `observed_damage_rate`/`observed_return_rate` (REAL historical
+      evidence) remain architecturally separate -- neither function
+      should ever read from or derive the other
+- [ ] **Observed damage/return rates**: re-confirm zero (`Decimal("0")`)
+      and `None` stay distinguishable throughout (a product with zero
+      observed damage is different from a product nobody has tracked)
+- [ ] **Status/blocker logic**: re-confirm `_detect_blockers()` still
+      returns `[]` unconditionally -- `BLOCKED` must remain
+      UNREACHABLE from any current input combination (see
+      `test_no_current_input_combination_produces_blocked`). Do NOT
+      reintroduce `observed_damage_rate >= 0.5` /
+      `observed_return_rate >= 0.5` as a blocker rule -- a hardening
+      review explicitly corrected this: a high observed failure rate
+      is severe negative evidence, not proof of impossibility (the
+      shipments that were NOT damaged/returned prove the operation can
+      be performed). That rate instead belongs in
+      `_detect_severe_observed_warnings()`, which forces
+      `operational_status` to at least `CAUTION` (checked BEFORE the
+      completeness gate, since it's concrete evidence in its own
+      right) without ever forcing `logistics_score` to `None` by
+      itself -- `logistics_score` is withheld only by the independent
+      evidence-completeness gate. If a future field genuinely proves
+      impossibility, it belongs in `_detect_blockers()`, checked first,
+      exactly like every other phase's blocker-precedence rule.
+- [ ] **Logistics Score direction**: re-confirm `logistics_score`
+      stays `0 = operationally difficult, 100 = easy/favorable` --
+      re-run `test_easy_light_product_phone_case` and
+      `test_difficult_heavy_product_mirror` after any change to a
+      dimension function; these are the tests most likely to catch an
+      accidentally-inverted anchor table
+- [ ] **Score weights**: `WEIGHT_PHYSICAL_EASE` (0.30) /
+      `WEIGHT_HANDLING_EASE` (0.25) / `WEIGHT_DELIVERY_CONVENIENCE`
+      (0.20) / `WEIGHT_FULFILLMENT_SUPPORT` (0.15) /
+      `WEIGHT_SHIPPING_SUPPORT` (0.10) and all piecewise-linear anchors
+      are provisional, documented, recalibrate only against real
+      outcome data
+- [ ] **Completeness weights**: re-verify `EVIDENCE_WEIGHTS` in
+      `src/logistics_analysis.py` still sums to exactly 1.0 after any
+      edit (`sum(EVIDENCE_WEIGHTS.values()) == 1.0`) -- this is easy to
+      silently break by adding/removing a field without rebalancing
+- [ ] **Future carrier adapters**: if/when a real carrier API (rate
+      quotes, real dimensional-weight divisors, real billing rules) is
+      integrated, it MUST live in `src/integrations/` (or similar),
+      know nothing about `src/logistics_analysis.py`'s formulas, and
+      produce nothing but a populated `LogisticsInputs` -- same
+      `integration -> models -> analysis` direction as every other
+      phase
+- [ ] **Future shipping-cost integration**: re-confirm
+      `known_shipping_cost` remains OBSERVED EVIDENCE only -- if a
+      future phase ever needs shipping cost in a profitability
+      calculation, that logic belongs in `src/margin_analysis.py`, not
+      here; `src/logistics_models.py` must keep having no `sale_price`
+      field
+- [ ] **Future marketplace logistics adapter**: any future automated
+      logistics-data collection (marketplace shipping program, carrier
+      quote API) must still never let `src/logistics_analysis.py`
+      import HTTP/Apify/Mercado Livre/browser-automation code directly
+- [ ] **No "Supplier lead time == delivery time" assumption**:
+      re-confirm `src/logistics_models.py` and
+      `src/logistics_analysis.py` still import NOTHING from
+      `src.supplier_models`/`src.supplier_analysis` (`grep -n
+      "^import\|^from" src/logistics_*.py` should show only
+      `dataclasses`/`decimal`/`src.logistics_models`) -- this is the
+      single most important rule in this phase
+- [ ] Regression tests: full suite still passing
+      (`python -m pytest -v` and `pytest -v`)
+
 ### Shared
 
 1. Check `pip list --outdated` for `requests`, `python-dotenv`, and

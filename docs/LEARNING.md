@@ -3088,3 +3088,669 @@ Para defender essa frase numa entrevista:
   -- escolher ESSE desenho (em vez de copiar a fórmula de completude
   mais simples da Fase 7) foi uma decisão deliberada, documentada, não
   uma reutilização automática.
+
+## Fase 9 — Análise de Logística (viabilidade operacional determinística)
+
+### 1. Nome da fase
+
+**Fase 9: motor determinístico que avalia a dificuldade operacional de
+mover um produto da origem até o cliente -- armazenamento, manuseio,
+embalagem, envio e entrega -- sem nenhuma integração de transportadora
+ainda.**
+
+### 2. Explicação simples
+
+Imagine dois produtos com exatamente a mesma margem de lucro: uma capa
+de celular e um espelho de parede. Financeiramente, os dois "valem a
+mesma coisa" por unidade vendida. Mas operacionalmente, são negócios
+completamente diferentes. A capa de celular é pequena, leve, não
+quebra fácil, e chega rápido. O espelho é pesado, grande, frágil, exige
+cuidado especial no manuseio, e demora mais para chegar. Vender o
+espelho tem mais chance de gerar quebra, devolução, reclamação, e
+custo extra de embalagem -- mesmo ganhando o mesmo valor por venda.
+
+A Análise de Logística faz exatamente essa pergunta: **"quão difícil é,
+na prática, mover esse produto da origem até o cliente final, com
+segurança e eficiência?"** -- separada de Demanda ("vende bem?"),
+Concorrência ("é fácil competir?"), Margem ("compensa financeiramente?")
+e Fornecedor ("consigo comprar de forma confiável?"). Um produto pode
+vender bem, ter ótima margem e um fornecedor excelente, e ainda ser um
+pesadelo logístico.
+
+### 3. Explicação técnica
+
+Implementamos a primeira camada de **logistics** e **fulfillment**
+determinística do projeto, com a mesma separação arquitetural das
+fases anteriores:
+
+- `src/logistics_models.py` — `LogisticsInputs`, entrada explícita (sem
+  nenhuma integração de transportadora ainda).
+- `src/logistics_analysis.py` — `analyze_logistics()`, sem nenhum
+  import de HTTP, Mercado Livre, Apify, `src.supplier_models`,
+  `src.supplier_analysis`, automação de navegador, ou LLM.
+
+- **Logistics (logística)**: o conjunto de atividades para mover um
+  produto fisicamente da origem até o cliente -- armazenamento,
+  manuseio, embalagem, envio, entrega.
+- **Fulfillment**: a capacidade operacional de completar um pedido de
+  ponta a ponta -- quem embala, quem despacha, se precisa de um
+  armazém intermediário.
+- **Last-mile delivery (entrega de última milha)**: o trecho final da
+  jornada, do vendedor/armazém até o cliente final.
+  `estimated_delivery_days` mede exatamente esse trecho -- e é
+  DIFERENTE do `lead_time_days`/`dispatch_time_days`/`delivery_time_days`
+  da Fase 8, que medem o trecho ANTERIOR (fornecedor até o vendedor).
+  Confundir os dois trechos é exatamente o tipo de erro semântico que
+  esse projeto verifica explicitamente -- por isso
+  `src/logistics_models.py` e `src/logistics_analysis.py` não importam
+  nada de `src.supplier_models`/`src.supplier_analysis`, e não existe
+  nenhum campo `sale_price` aqui (o que torna um cálculo de margem
+  arquiteturalmente impossível, não só indesejado).
+- **Package dimensions (dimensões do pacote)**: `length_cm`/`width_cm`/
+  `height_cm` -- só geram um volume quando as TRÊS são conhecidas; um
+  subconjunto parcial nunca produz um volume parcial ou chutado.
+- **Volume**: `package_volume_cm3 = length_cm * width_cm * height_cm`;
+  `volume_liters = package_volume_cm3 / 1000` -- duas unidades
+  diferentes, nunca confundidas (1 litro = 1000 cm³).
+- **Dimensional weight (peso cúbico/volumétrico)**: um peso calculado a
+  partir do volume, não da balança -- `dimensional_weight_kg =
+  package_volume_cm3 / dimensional_weight_divisor`. O divisor é um
+  parâmetro explícito, fornecido pelo usuário -- NUNCA uma constante
+  universal fixada no código, porque transportadoras reais usam
+  divisores diferentes (valores comuns incluem 5000 e 6000, variando
+  por transportadora e convenção).
+- **Actual weight (peso real/físico)**: `weight_kg`, o peso medido na
+  balança -- diferente do peso cúbico, que é um peso calculado.
+- **Billable weight (peso faturável)**: o peso que uma transportadora
+  REAL usaria para cobrar (tipicamente o maior entre peso real e peso
+  cúbico). Como este projeto não tem nenhuma integração de
+  transportadora, `reference_billable_weight_kg` é rotulado
+  explicitamente como "reference" (referência) em toda a saída -- uma
+  comparação genérica e ilustrativa, NUNCA apresentada como uma cobrança
+  real.
+- **Carrier-specific rule (regra específica de transportadora)**:
+  qualquer regra de cobrança, divisor, ou restrição que pertence a uma
+  transportadora específica -- este projeto nunca inventa uma dessas
+  regras; se não foi explicitamente informada, simplesmente não é
+  calculada.
+- **Handling complexity (complexidade de manuseio)**: o quão delicado
+  ou trabalhoso é manusear um produto -- medido por
+  `handling_ease_score`, a partir de sinalizadores conhecidos
+  (fragile/liquid/hazardous/perishable/temperature_sensitive/
+  requires_special_handling/stackable).
+- **Fragile / hazardous / perishable / temperature-sensitive goods**
+  (produtos frágeis / perigosos / perecíveis / sensíveis à temperatura):
+  quatro categorias de risco de manuseio, cada uma com sua própria
+  semântica -- frágil quebra com impacto; perigoso pode ter restrição
+  regulatória de transporte; perecível tem prazo de validade; sensível
+  à temperatura precisa de uma cadeia de frio. Nenhuma dessas é tratada
+  como prova de uma violação regulatória real -- isso exigiria um
+  julgamento jurídico que este módulo não está qualificado a fazer.
+- **Storage/shipping burden (carga/esforço de armazenamento e envio)**:
+  o quanto um produto exige em espaço, cuidado e custo para ser
+  guardado e enviado -- a ideia interna que `physical_ease_score` e
+  `handling_ease_score` capturam, só que invertida (ver "score
+  inversion" abaixo).
+- **Delivery SLA (acordo de nível de serviço de entrega)**: um
+  compromisso de prazo de entrega -- aqui representado de forma simples
+  por `estimated_delivery_days`, sem modelar penalidades contratuais
+  reais.
+- **Damage rate (taxa de avaria)**: `observed_damage_rate`, uma fração
+  OBSERVADA de envios que chegaram danificados (ex.: "3 de 40 envios" ->
+  0.075) -- nunca uma probabilidade inferida do sinalizador `fragile`
+  ou de qualquer outra propriedade.
+- **Return rate (taxa de devolução)**: `observed_return_rate`, a mesma
+  lógica para devoluções -- evidência histórica real, nunca fabricada.
+- **Observed vs. inferred (observado vs. inferido)**: a separação
+  arquitetural mais importante desta fase. `observed_damage_rate`/
+  `observed_return_rate` são FATOS históricos; `handling_ease_score` é
+  um INDICADOR de risco a partir de propriedades conhecidas. Os dois
+  nunca se alimentam -- um produto frágil nunca gera uma taxa de avaria
+  inventada, e uma taxa observada nunca é derivada de um sinalizador de
+  propriedade.
+- **Logistics burden (carga logística)**: o conceito interno de
+  "dificuldade" que várias funções calculam a partir de âncoras -- sempre
+  convertido para uma pontuação de FACILIDADE antes de aparecer no
+  resultado final (ver próximo termo).
+- **Score inversion (inversão de direção da pontuação)**: `logistics_score`
+  segue a convenção **0 = operacionalmente difícil, 100 = fácil/favorável**
+  -- o OPOSTO de uma função interna de "burden" (carga) que poderia,
+  naturalmente, crescer com a dificuldade. Cada função de dimensão em
+  `src/logistics_analysis.py` é escrita para devolver diretamente uma
+  "ease" (facilidade), com a direção documentada por dimensão, para
+  nunca inverter a convenção por acidente.
+- **Operational status (status operacional)**: `BLOCKED` / `CAUTION` /
+  `INSUFFICIENT_DATA` / `EASY` / `MANAGEABLE`, verificado nessa ordem de
+  prioridade (bloqueador primeiro, depois aviso severo, depois
+  completude, depois a pontuação) -- não é apenas a pontuação
+  disfarçada de texto. **Correção feita nesta revisão de hardening:**
+  nesta fase, nenhum campo atual consegue provar uma impossibilidade
+  operacional genuína, então `BLOCKED` é hoje INALCANÇÁVEL a partir de
+  qualquer combinação de entrada -- fica reservado, documentado como
+  tal, para um campo futuro que realmente consiga provar isso. Uma
+  pontuação numérica alta pode coexistir com `CAUTION` (não com
+  `BLOCKED`), calculada a partir de outras dimensões.
+- **Hard blocker (bloqueador rígido)**: uma condição que prova que a
+  operação é atualmente IMPOSSÍVEL -- não apenas que ela teve um
+  resultado péssimo. Nenhum campo do schema atual de `LogisticsInputs`
+  alcança essa barra (ver "severidade vs. impossibilidade" e a seção 4
+  para o raciocínio completo, incluindo o bug real que esta revisão
+  corrigiu). Toda combinação arriscada (ex.: `temperature_sensitive`
+  com entrega longa, ou uma taxa de avaria/devolução severa) gera um
+  AVISO, nunca um bloqueador.
+- **Operational failure rate (taxa de falha operacional)**: a fração
+  observada de eventos que deram errado (avaria, devolução) -- evidência
+  real e severa, mas que, por definição, inclui implicitamente a fração
+  que NÃO deu errado. Uma taxa de 60% de avaria significa que 40%
+  chegaram bem -- prova direta de que a operação não é impossível,
+  mesmo sendo uma evidência extremamente negativa.
+- **Severity vs. impossibility (severidade vs. impossibilidade)**: a
+  distinção central desta revisão de hardening. Severidade é "o quão
+  mal isso está indo" (uma escala contínua, capturada por avisos e pela
+  pontuação); impossibilidade é "isso pode ser feito, sim ou não" (uma
+  afirmação categórica, reservada para `BLOCKED`). Misturar as duas
+  faz um status categórico mentir sobre o que a evidência realmente
+  prova -- ver seção 4 e `docs/LEARNING.md` ("Resultado ruim != operação
+  impossível") para o exemplo completo.
+- **Evidence completeness (completude de evidência)**: quanto
+  realmente sabemos sobre a logística deste produto, numa escala
+  ponderada -- separada da qualidade (`logistics_score`), igual às
+  fases anteriores.
+- **Weighted completeness (completude ponderada)**: `EVIDENCE_WEIGHTS`
+  tem 20 itens somando exatamente 1.0 -- peso/dimensões/fragilidade
+  pesam muito mais do que, por exemplo, disponibilidade de seguro.
+- **Tri-state boolean (booleano de três estados)**: mesma disciplina
+  da Fase 8 -- `True`/`False`/`None`, nunca `None` tratado como `False`.
+- **Unit consistency (consistência de unidade)**: cada campo tem sua
+  unidade fixa no próprio nome (`weight_kg`, `length_cm`) e nunca é
+  misturado -- `package_volume_cm3` e `volume_liters` são mantidos como
+  dois valores distintos, nunca confundidos entre si.
+- **Derived metric (métrica derivada)**: um valor CALCULADO a partir de
+  outros campos conhecidos (volume, peso cúbico, peso faturável de
+  referência) -- sempre `None` quando os campos de origem não são
+  totalmente conhecidos, nunca um valor chutado.
+- **Provider-neutral model (modelo neutro em relação ao provedor)**:
+  `LogisticsInputs` não sabe de onde os dados vieram (digitados à mão
+  hoje; de uma transportadora/marketplace no futuro) -- a análise
+  funciona igual.
+- **Deterministic logistics scoring (pontuação de logística
+  determinística)**: `analyze_logistics()` sempre devolve o mesmo
+  resultado para a mesma entrada -- sem IA, sem aleatoriedade.
+
+### 4. Conexão entre o simples e o técnico, com números
+
+**O exemplo da capa de celular vs. o espelho**, com os números reais
+calculados por `analyze_logistics()`:
+
+```
+Capa de celular: weight_kg=0.1, 15x8x1 cm, fragile=False,
+                 requires_special_handling=False, estimated_delivery_days=2
+-> package_volume_cm3=120, volume_liters=0.12
+-> physical_ease_score=100.0, handling_ease_score=100.0,
+   delivery_convenience_score=100.0, fulfillment_support_score=100.0,
+   shipping_support_score=100.0
+-> Logistics Score=100.0, Evidence Completeness=77.0%, Status=EASY
+```
+
+```
+Espelho: weight_kg=12, 100x60x5 cm, fragile=True,
+         requires_special_handling=True, estimated_delivery_days=8
+-> package_volume_cm3=30000, volume_liters=30
+-> physical_ease_score=41.0, handling_ease_score=76.86,
+   delivery_convenience_score=70.0, fulfillment_support_score=60.0,
+   shipping_support_score=100.0
+-> Logistics Score=64.51, Evidence Completeness=77.0%, Status=MANAGEABLE
+```
+
+Mesma margem possível (hipoteticamente, os dois podem vender pelo mesmo
+preço com o mesmo custo), mas o espelho é claramente mais difícil de
+operar: é 120x mais pesado em volume (30000 cm³ contra 120 cm³, ou seja,
+250x maior), é frágil onde a capa não é, exige manuseio especial onde a
+capa não exige, e demora 4x mais para chegar ao cliente. O
+`physical_ease_score` capta a diferença de peso/volume (100.0 contra
+41.0); o `handling_ease_score` capta o risco de manuseio (100.0 contra
+76.86 -- note que mesmo "pior", o espelho não desaba para zero, porque
+dos sete sinalizadores de manuseio, apenas TRÊS estão no lado
+desfavorável para o espelho: `fragile=True` (ease 40, peso 1.0),
+`requires_special_handling=True` (ease 30, peso 1.2) e `stackable=False`
+(ease 70, peso 0.6, já que `stackable=True` seria o lado favorável). Os
+outros QUATRO -- `liquid`, `hazardous`, `perishable` e
+`temperature_sensitive`, todos `False` no espelho -- estão no lado
+favorável (ease 100 cada), e são justamente eles que impedem a média
+ponderada de despencar: (40×1.0 + 100×1.0 + 100×1.2 + 100×1.0 + 100×1.0
++ 70×0.6 + 30×1.2) / 7.0 = 538 / 7.0 = 76.86); e
+`delivery_convenience_score` capta o prazo (100.0 contra 70.0). O
+resultado final, 100.0 contra 64.51, mostra numericamente a mesma
+intuição do exemplo simples: mesma margem possível, operações muito
+diferentes.
+
+**Por que o peso cúbico pode ultrapassar o peso real:** um produto leve
+mas grande (ex.: um travesseiro) pode ter `dimensional_weight_kg` maior
+que `weight_kg`. Quando isso acontece, o sistema emite um AVISO
+("dimensional weight exceeds actual weight"), nunca um bloqueador --
+porque nenhuma transportadora real foi consultada, e a regra de qual
+peso é cobrado varia por transportadora.
+
+**Por que nenhum bloqueador real existe nesta fase (corrigido numa
+revisão de hardening após a primeira versão):** a avaliação de fontes
+(seção obrigatória desta fase, feita antes de qualquer código de
+pontuação) concluiu que NENHUMA contradição comprovável é alcançável a
+partir dos campos escolhidos sem (a) inventar um campo de capacidade
+que não existe (ex.: `cold_chain_supported`, necessário para transformar
+`temperature_sensitive=True` num bloqueador real) ou (b) fazer um
+julgamento jurídico/regulatório (ex.: declarar que uma combinação
+perigoso+líquido "não pode ser enviada" -- uma conclusão de compliance
+que este módulo não está qualificado a afirmar deterministicamente).
+
+A primeira versão desta fase tratou incorretamente uma EXCEÇÃO como
+bloqueador: `observed_damage_rate`/`observed_return_rate` >= 50%. Numa
+revisão de hardening posterior, isso foi identificado como um erro
+semântico e corrigido -- ver "Resultado ruim != operação impossível" na
+seção 9 para a explicação completa de por que uma taxa de avaria de 60%
+é evidência severa, mas não é prova de impossibilidade (os 40% que
+chegaram bem provam o contrário). Hoje, essa condição gera um AVISO
+severo e força o status para `CAUTION`, nunca `BLOCKED`. Como resultado,
+`BLOCKED` é INALCANÇÁVEL a partir de qualquer entrada atual --
+`_detect_blockers()` sempre devolve uma lista vazia, mantida como um
+ponto de extensão reservado para um campo futuro que realmente consiga
+provar impossibilidade (ex.: uma transportadora confirmando recusa de
+envio).
+
+### 5. O que implementamos na prática
+
+- `src/logistics_models.py`:
+  - `LogisticsInputs` — `product_name` (obrigatório) + 22 campos
+    opcionais (físicos, manuseio, embalagem, fulfillment, envio,
+    histórico observado). Validação: medidas físicas > 0 se informadas
+    (zero rejeitado, pois não é um valor físico significativo), custos
+    >= 0, dias de entrega >= 0, taxas observadas entre 0 e 1,
+    booleanos só `True`/`False`/`None`. Sem regras de conflito entre
+    campos (diferente da Fase 7/8) -- não existe aqui nenhuma dupla
+    representação ambígua do mesmo dado.
+- `src/logistics_analysis.py`:
+  - `analyze_logistics()` — calcula `physical_ease_score`,
+    `handling_ease_score`, `delivery_convenience_score`,
+    `fulfillment_support_score`, `shipping_support_score` (pesos
+    0.30/0.25/0.20/0.15/0.10), calcula `evidence_completeness_score`
+    (ponderado, 20 itens somando 1.0), e só produz `logistics_score`
+    se a completude atingir 40%. `_detect_blockers()` sempre devolve
+    `[]` hoje (nenhum campo atual prova impossibilidade); uma taxa de
+    avaria/devolução observada >= 50% gera um AVISO severo via
+    `_detect_severe_observed_warnings()`, não um bloqueador.
+  - `operational_status`: `BLOCKED` (inalcançável hoje, reservado) /
+    `CAUTION` (aviso severo presente, OU pontuação < 50) /
+    `INSUFFICIENT_DATA` (completude insuficiente) / `EASY` /
+    `MANAGEABLE`, nessa ordem de prioridade -- um aviso severo é
+    verificado ANTES da verificação de completude, porque uma taxa
+    observada é evidência concreta por si só, mesmo quando outros
+    campos são desconhecidos; mostrado ao lado da pontuação, nunca
+    escondido dentro dela nem forçando-a a `None` por si só (mesmo
+    padrão da Fase 8, agora aplicado a um aviso em vez de um
+    bloqueador).
+- `src/main.py` — nova opção `8. Analyze Logistics`, com suporte
+  explícito a `y`/`n`/branco para os campos booleanos.
+- `tests/test_logistics_models.py` e `tests/test_logistics_analysis.py`
+  -- cobrindo produto fácil/leve, produto difícil/pesado, cada
+  sinalizador de manuseio em `True`/`False`/`None`, dimensões completas
+  e parcialmente ausentes, cálculo de volume, peso cúbico com e sem
+  divisor, entrega rápida/lenta/desconhecida, rastreamento/seguro em
+  todos os três estados, custo de envio zero vs. desconhecido, taxa de
+  avaria/devolução zero vs. desconhecida vs. acima do limiar de aviso
+  severo (confirmando que isso gera `CAUTION` + aviso, NUNCA `BLOCKED`),
+  dados esparsos, pontuação retida por baixa completude, completude de
+  evidência independente da pontuação de qualidade, aviso severo
+  mostrado ao lado da pontuação (nunca forçando-a a `None` por si só),
+  determinismo, limites de 0-100, verificação explícita de que nenhuma
+  taxa de avaria é fabricada a partir do sinalizador `fragile`, e um
+  teste dedicado (`test_no_current_input_combination_produces_blocked`)
+  que constrói o pior cenário plausível (todas as flags de risco
+  ativas, taxas de avaria/devolução em 100%) e confirma que mesmo assim
+  `operational_status` nunca chega a `BLOCKED`.
+- Validação ao vivo via CLI com o cenário EXATO do espelho usado no
+  exemplo numérico acima (peso 12kg, 100x60x5cm, `fragile=True`,
+  `requires_special_handling=True`, `supplier_fulfilled=False`,
+  `tracking_available=True`, `insurance_available=True`, entrega em 8
+  dias, todo o resto em branco): Physical ease 41.00, Handling ease
+  76.86, Delivery convenience 70.00, Fulfillment support 60.00,
+  Shipping support 100.00, Logistics Score 64.51, Evidence Completeness
+  77.00%, Operational Status MANAGEABLE -- cada subcomponente
+  confirmado à mão contra a fórmula, e os números da CLI confirmados
+  como idênticos aos do exemplo escrito, antes de aceitar o resultado.
+- Revisão de hardening (pós-implementação, antes do commit) encontrou e
+  corrigiu DOIS problemas reais:
+  1. O aviso de peso cúbico vs. peso real usava `inputs.weight_kg or
+     Decimal("0")`, um padrão que trataria um `weight_kg` ausente como
+     zero caso o código evoluísse -- mesmo não sendo alcançável no
+     caminho atual, foi corrigido para uma verificação explícita de
+     `is not None`, com um teste de regressão dedicado.
+  2. Um erro semântico mais significativo: `observed_damage_rate`/
+     `observed_return_rate` >= 50% estava implementado como um
+     BLOQUEADOR real, mas uma taxa de falha (mesmo severa) não prova
+     impossibilidade -- prova desempenho ruim. Corrigido para gerar um
+     AVISO severo que força `CAUTION`, removendo `BLOCKED` do conjunto
+     de estados alcançáveis nesta fase (mantido no vocabulário, mas
+     documentado como reservado para um campo futuro que realmente
+     prove impossibilidade). Ver "Resultado ruim != operação
+     impossível" na seção 9.
+
+### 6. Termos técnicos aprendidos
+
+- **termo:** Logistics (logística)
+  **definição:** o conjunto de atividades para mover um produto da
+  origem até o cliente final -- armazenamento, manuseio, embalagem,
+  envio, entrega.
+  **como apareceu no projeto:** o nome da fase inteira e da pergunta de
+  negócio central.
+
+- **termo:** Fulfillment
+  **definição:** a capacidade operacional de completar um pedido de
+  ponta a ponta.
+  **como apareceu no projeto:** `fulfillment_support_score`, a partir
+  de `supplier_fulfilled`/`seller_fulfilled`/`warehouse_required`.
+
+- **termo:** Last-mile delivery (entrega de última milha)
+  **definição:** o trecho final da entrega, do vendedor/armazém até o
+  cliente.
+  **como apareceu no projeto:** `estimated_delivery_days`, mantido
+  explicitamente separado do `lead_time_days` da Fase 8.
+
+- **termo:** Package dimensions (dimensões do pacote)
+  **definição:** comprimento, largura e altura de uma embalagem.
+  **como apareceu no projeto:** `length_cm`/`width_cm`/`height_cm`, só
+  geram volume quando as três são conhecidas.
+
+- **termo:** Volume
+  **definição:** o espaço tridimensional ocupado por um pacote.
+  **como apareceu no projeto:** `package_volume_cm3` e `volume_liters`,
+  mantidos como unidades distintas.
+
+- **termo:** Dimensional weight (peso cúbico/volumétrico)
+  **definição:** um peso calculado a partir do volume de um pacote, não
+  da balança.
+  **como apareceu no projeto:** `dimensional_weight_kg`, só calculado
+  com um divisor explicitamente informado.
+
+- **termo:** Actual weight (peso real)
+  **definição:** o peso físico medido de um produto.
+  **como apareceu no projeto:** `weight_kg`.
+
+- **termo:** Billable weight (peso faturável)
+  **definição:** o peso que uma transportadora usaria para cobrar o
+  frete -- tipicamente o maior entre peso real e peso cúbico.
+  **como apareceu no projeto:** `reference_billable_weight_kg`,
+  rotulado como referência, nunca como cobrança real.
+
+- **termo:** Carrier-specific rule (regra específica de transportadora)
+  **definição:** uma regra de cobrança ou cálculo que pertence a uma
+  transportadora específica, não universal.
+  **como apareceu no projeto:** justificativa para
+  `dimensional_weight_divisor` ser sempre um parâmetro explícito, nunca
+  uma constante fixa.
+
+- **termo:** Handling complexity (complexidade de manuseio)
+  **definição:** o quão delicado ou trabalhoso é manusear um produto.
+  **como apareceu no projeto:** `handling_ease_score`.
+
+- **termo:** Fragile goods (produtos frágeis)
+  **definição:** produtos que podem quebrar com impacto ou vibração.
+  **como apareceu no projeto:** `fragile`.
+
+- **termo:** Hazardous goods (produtos perigosos)
+  **definição:** produtos que podem ter restrições regulatórias de
+  transporte.
+  **como apareceu no projeto:** `hazardous` -- nunca usado para afirmar
+  uma conclusão regulatória real.
+
+- **termo:** Perishable goods (produtos perecíveis)
+  **definição:** produtos com prazo de validade limitado.
+  **como apareceu no projeto:** `perishable`.
+
+- **termo:** Temperature-sensitive goods (produtos sensíveis à
+  temperatura)
+  **definição:** produtos que exigem uma faixa de temperatura
+  controlada durante o transporte.
+  **como apareceu no projeto:** `temperature_sensitive`, combinado com
+  entrega longa para gerar um aviso (nunca um bloqueador).
+
+- **termo:** Storage/shipping burden (carga de armazenamento/envio)
+  **definição:** o quanto um produto exige em espaço, cuidado e custo
+  para ser guardado e enviado.
+  **como apareceu no projeto:** o conceito interno que
+  `physical_ease_score`/`handling_ease_score` capturam, na direção
+  invertida (facilidade, não carga).
+
+- **termo:** Delivery SLA (acordo de nível de serviço de entrega)
+  **definição:** um compromisso de prazo de entrega.
+  **como apareceu no projeto:** representado de forma simplificada por
+  `estimated_delivery_days`.
+
+- **termo:** Damage rate (taxa de avaria)
+  **definição:** a fração observada de envios que chegaram danificados.
+  **como apareceu no projeto:** `observed_damage_rate`, nunca inferida
+  de `fragile`.
+
+- **termo:** Return rate (taxa de devolução)
+  **definição:** a fração observada de vendas devolvidas.
+  **como apareceu no projeto:** `observed_return_rate`.
+
+- **termo:** Observed vs. inferred (observado vs. inferido)
+  **definição:** a distinção entre um fato histórico medido e um
+  indicador de risco derivado de uma propriedade conhecida.
+  **como apareceu no projeto:** a separação arquitetural entre
+  `observed_damage_rate`/`observed_return_rate` e `handling_ease_score`.
+
+- **termo:** Logistics burden (carga logística)
+  **definição:** o conceito interno de dificuldade operacional antes de
+  ser convertido para uma pontuação de facilidade.
+  **como apareceu no projeto:** o cálculo intermediário atrás de cada
+  função de dimensão, sempre devolvido já como "ease".
+
+- **termo:** Score inversion (inversão de direção da pontuação)
+  **definição:** a decisão deliberada de que uma pontuação segue uma
+  direção diferente de um cálculo interno equivalente.
+  **como apareceu no projeto:** `logistics_score` = 0 (difícil) a 100
+  (fácil), documentado por dimensão para nunca inverter por acidente.
+
+- **termo:** Operational status (status operacional)
+  **definição:** uma classificação categórica do estado operacional de
+  um produto, verificada em ordem de prioridade -- cada palavra da
+  classificação precisa significar exatamente o que ela diz, não ser
+  apenas a pontuação disfarçada de texto.
+  **como apareceu no projeto:** `BLOCKED`/`CAUTION`/`INSUFFICIENT_DATA`/
+  `EASY`/`MANAGEABLE`. Numa revisão de hardening, a ordem e o
+  significado de `BLOCKED` foram corrigidos -- ver "Hard blocker" e a
+  seção 9.
+
+- **termo:** Hard blocker (bloqueador rígido)
+  **definição:** uma condição que prova que a operação é atualmente
+  IMPOSSÍVEL -- não uma condição que apenas teve um resultado péssimo.
+  Mostrado separadamente de qualquer média, nunca escondido dentro
+  dela.
+  **como apareceu no projeto:** `result.blockers`. A primeira versão
+  desta fase tratou incorretamente uma taxa de avaria/devolução >= 50%
+  como bloqueador; corrigido numa revisão de hardening para
+  `_detect_blockers()` sempre devolver `[]` (nenhum campo atual prova
+  impossibilidade), mantido como ponto de extensão reservado para o
+  futuro.
+
+- **termo:** Operational failure rate (taxa de falha operacional)
+  **definição:** a fração observada de eventos que deram errado --
+  evidência real de desempenho ruim, mas que, por definição, inclui
+  implicitamente a fração que NÃO deu errado.
+  **como apareceu no projeto:** `observed_damage_rate`/
+  `observed_return_rate` -- usados para gerar um AVISO severo (que
+  força `CAUTION`), nunca para fabricar uma prova de impossibilidade.
+
+- **termo:** Severity vs. impossibility (severidade vs.
+  impossibilidade)
+  **definição:** a distinção entre "o quão mal isso está indo" (uma
+  escala contínua) e "isso pode ser feito, sim ou não" (uma afirmação
+  categórica). Confundir as duas faz um status categórico mentir sobre
+  o que a evidência realmente prova.
+  **como apareceu no projeto:** o erro semântico corrigido nesta
+  revisão de hardening -- ver "Resultado ruim != operação impossível"
+  na seção 9.
+
+- **termo:** Evidence completeness (completude de evidência)
+  **definição:** quanto se sabe sobre algo, numa escala mensurável.
+  **como apareceu no projeto:** `evidence_completeness_score`.
+
+- **termo:** Weighted completeness (completude ponderada)
+  **definição:** uma medida de completude em que cada campo contribui
+  uma fração diferente do total.
+  **como apareceu no projeto:** `EVIDENCE_WEIGHTS`, 20 itens somando
+  exatamente 1.0.
+
+- **termo:** Tri-state boolean (booleano de três estados)
+  **definição:** um valor `True`/`False`/`None`, nunca reduzido a dois
+  estados.
+  **como apareceu no projeto:** todos os 13 campos booleanos de
+  `LogisticsInputs`.
+
+- **termo:** Unit consistency (consistência de unidade)
+  **definição:** garantir que cada valor numérico tenha uma unidade
+  clara e nunca seja confundido com outra unidade.
+  **como apareceu no projeto:** `package_volume_cm3` vs. `volume_liters`,
+  nomes de campo com a unidade explícita.
+
+- **termo:** Derived metric (métrica derivada)
+  **definição:** um valor calculado a partir de outros campos
+  conhecidos, nunca um dado de entrada bruto.
+  **como apareceu no projeto:** `package_volume_cm3`,
+  `dimensional_weight_kg`, `reference_billable_weight_kg`.
+
+- **termo:** Provider-neutral model (modelo neutro em relação ao
+  provedor)
+  **definição:** um modelo de dados que não sabe nem se importa com a
+  origem dos dados.
+  **como apareceu no projeto:** `LogisticsInputs` inteiro.
+
+- **termo:** Deterministic logistics scoring (pontuação de logística
+  determinística)
+  **definição:** um cálculo cujo resultado depende apenas da entrada --
+  sempre o mesmo para a mesma entrada.
+  **como apareceu no projeto:** `analyze_logistics()` inteiro.
+
+### 7. Comandos/ferramentas usados
+
+```bash
+python -m src.main          # executar a CLI (opção 8 = Analyze Logistics)
+python -m pytest -v         # rodar todos os testes via módulo
+pytest -v                   # rodar todos os testes direto
+```
+
+Ferramentas: Python 3.12, `decimal.Decimal`, `dataclasses`, `pytest` --
+nenhuma dependência nova. Como as Fases 7 e 8, funciona 100% offline.
+
+### 8. Como explicar isso para um recrutador ou cliente
+
+"Eu construí um motor de avaliação logística determinístico que separa
+peso real de peso cúbico, trata taxas de avaria/devolução como
+evidência observada nunca inferida de propriedades do produto, inverte
+corretamente a direção da pontuação para manter uma convenção
+consistente com o resto do sistema, e evita inventar bloqueadores
+regulatórios ou de capacidade que os dados disponíveis não sustentam."
+
+Para defender essa frase numa entrevista:
+
+- "Separa peso real de peso cúbico": um produto leve mas grande pode
+  custar mais para enviar do que um produto pesado mas compacto --
+  ignorar isso é um erro de modelagem logística comum.
+- "Trata taxas de avaria/devolução como evidência observada nunca
+  inferida de propriedades do produto": um sinalizador `fragile=True`
+  não é a mesma coisa que "esse produto quebra 15% das vezes" -- o
+  primeiro é um indicador de risco, o segundo seria uma estatística
+  fabricada; meu sistema nunca transforma um no outro.
+- "Inverte corretamente a direção da pontuação": internamente, é mais
+  natural calcular "quanto isso pesa contra o produto" (carga); mas a
+  convenção do projeto inteiro é "100 = bom", então cada função de
+  dimensão foi escrita para devolver facilidade diretamente, documentada
+  caso a caso, para nunca inverter por acidente -- um bug sutil e fácil
+  de cometer sem esse cuidado.
+- "Evita inventar bloqueadores regulatórios ou de capacidade": seria
+  fácil (e errado) declarar que "perigoso + líquido não pode ser
+  enviado" sem nenhuma base jurídica real, ou inventar um campo de
+  "capacidade de cadeia de frio" só para forçar um bloqueador -- meu
+  sistema prefere emitir um aviso honesto sobre o risco, em vez de uma
+  falsa certeza.
+
+### 9. O que devo lembrar desta fase
+
+- **Mesma margem, operações diferentes** -- uma capa de celular e um
+  espelho podem ter a mesma margem de lucro e ser negócios logísticos
+  completamente diferentes; por isso essa análise existe, separada de
+  Demanda/Concorrência/Margem/Fornecedor.
+- **Entrega ao cliente não é prazo de fornecedor** -- confundir
+  `estimated_delivery_days` (última milha) com `lead_time_days` da Fase
+  8 (sourcing) é um erro de modelagem real, prevenido aqui tanto por
+  documentação quanto pela ausência de qualquer import entre os dois
+  módulos.
+- **Observado e inferido nunca se misturam** -- uma taxa de avaria real
+  e um indicador de risco de manuseio respondem perguntas diferentes;
+  tratá-los como a mesma coisa seria fabricar uma estatística.
+- **Inverter a direção da pontuação exige disciplina, não sorte** --
+  escrever cada função de dimensão para devolver "ease" diretamente
+  (em vez de calcular "burden" e esquecer de inverter em algum lugar)
+  foi uma decisão deliberada, documentada por dimensão.
+- **Aviso severo e pontuação coexistem, mesmo quando o número parece
+  bom** -- um `logistics_score` alto ao lado de `Operational Status:
+  CAUTION` não é uma contradição; significa que as dimensões medíveis
+  pareciam boas, mas uma taxa de falha real e observada ainda exige
+  atenção.
+- **Hoje, nada vira bloqueador de verdade nesta fase** -- nem a maioria
+  das combinações arriscadas (ex.: sensível à temperatura + entrega
+  longa), nem mesmo uma taxa de avaria/devolução severa (>= 50%).
+  Nenhuma tem evidência suficiente para provar uma IMPOSSIBILIDADE, e
+  forçar um bloqueador ali seria inventar certeza que os dados não
+  sustentam; um aviso -- e, no caso da taxa severa, um status `CAUTION`
+  -- é a resposta honesta. `BLOCKED` continua no vocabulário, documentado
+  como reservado para um campo futuro que realmente consiga provar
+  impossibilidade.
+- **Resultado ruim != operação impossível** -- a lição mais importante
+  desta revisão de hardening, encontrada e corrigida ANTES do commit.
+  A primeira versão desta fase tratava `observed_damage_rate >= 0.5`
+  como um bloqueador (`BLOCKED`), copiando a ideia do `stock_quantity
+  == 0` da Fase 8. Mas os dois casos NÃO são análogos: `stock_quantity
+  == 0` é uma contradição genuína (zero estoque, zero venda possível,
+  sem exceção). Uma taxa de avaria de 55% é diferente -- ela
+  LITERALMENTE significa que 45% dos envios chegaram bem, o que é
+  prova direta de que a operação NÃO é impossível, só muito malfeita.
+
+  **A analogia:** se uma transportadora danifica 6 de 10 espelhos
+  enviados, isso é uma operação extremamente ruim e deveria disparar
+  `CAUTION` com um aviso severo. Mas o fato de 4 espelhos ainda terem
+  chegado bem prova que a entrega não era literalmente impossível. Um
+  status `BLOCKED` deveria significar "temos evidência de que a
+  operação não pode ser realizada agora," não apenas "os resultados
+  dela são péssimos."
+
+  **Os conceitos que essa distinção exige manter separados:**
+  - *Operational failure rate* (taxa de falha operacional): o quão
+    frequentemente algo deu errado -- uma medida de FREQUÊNCIA.
+  - *Severe risk* (risco severo): uma classificação qualitativa de que
+    essa frequência é alta o suficiente para merecer atenção
+    prioritária -- ainda uma questão de GRAU.
+  - *Hard blocker* (bloqueador rígido): uma prova de que a operação não
+    pode ser realizada -- uma questão BINÁRIA, não de grau nenhum.
+  - *Por que um limiar (threshold) não deveria mudar o SIGNIFICADO de
+    um status*: subir ou abaixar o número 50% não transforma "ruim" em
+    "impossível" -- são categorias diferentes, não pontos diferentes
+    na mesma escala. Se o limiar fosse 90% em vez de 50%, o erro
+    semântico seria exatamente o mesmo.
+  - *Categorical semantics* (semântica categórica): um status como
+    `BLOCKED`/`CAUTION`/`EASY` promete ao leitor um significado
+    específico e estável -- se `BLOCKED` às vezes significa
+    "impossível" e às vezes significa "muito ruim," a categoria perdeu
+    seu valor informativo.
+  - *Severity vs. impossibility* (severidade vs. impossibilidade): o
+    nome dado a essa distinção inteira nesta fase -- ver seção 6.
+- **Revisão de hardening encontra problemas reais mesmo depois dos
+  testes passarem** -- os 486 testes da primeira versão desta fase
+  passavam sem erro; o bug do bloqueador só foi encontrado porque uma
+  segunda rodada de revisão perguntou explicitamente "essa evidência
+  prova impossibilidade, ou só prova que foi ruim?" -- uma pergunta que
+  nenhum teste automatizado faz por conta própria. Isso, mais a
+  correção anterior do `or Decimal("0")` defensivo demais (substituído
+  por uma verificação explícita de `None`), confirma que vale a pena
+  reservar uma passada de revisão semântica dedicada antes de cada
+  commit, mesmo quando a suíte de testes já está 100% verde.
