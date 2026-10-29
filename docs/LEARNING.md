@@ -3754,3 +3754,563 @@ Para defender essa frase numa entrevista:
   por uma verificação explícita de `None`), confirma que vale a pena
   reservar uma passada de revisão semântica dedicada antes de cada
   commit, mesmo quando a suíte de testes já está 100% verde.
+
+## Fase 10 — Análise de Risco (fragilidade determinística da oportunidade)
+
+### 1. Nome da fase
+
+**Fase 10: motor determinístico que avalia o que poderia dar errado,
+tornar-se instável, ou criar um prejuízo desproporcional numa
+oportunidade de produto -- mesmo que todas as outras dimensões pareçam
+boas.**
+
+### 2. Explicação simples
+
+Imagine duas empresas vendendo o mesmo produto, com exatamente o mesmo
+lucro hoje:
+
+**Empresa A:**
+- 5 fornecedores diferentes
+- vendas espalhadas em 3 canais
+- custo de compra estável
+- taxa de devolução baixa
+
+**Empresa B:**
+- 1 fornecedor só
+- 100% das vendas em um único marketplace
+- o fornecedor muda o preço com frequência
+- o estoque desaparece sem aviso
+
+O lucro atual das duas pode ser idêntico. Mas a Empresa B é muito mais
+fácil de quebrar: se o único fornecedor falhar, se o marketplace mudar
+uma regra, ou se o preço de compra subir de repente, a Empresa B não
+tem para onde se virar -- a Empresa A tem cinco fornecedores e três
+canais para absorver o choque.
+
+A Análise de Risco existe para medir exatamente essa fragilidade --
+não "esse produto vende?" (Demanda), nem "é fácil competir?"
+(Concorrência), nem "a venda compensa financeiramente?" (Margem), nem
+"consigo comprar de forma confiável?" (Fornecedor), nem "consigo
+entregar com eficiência?" (Logística) -- mas sim **"o que pode dar
+errado aqui, mesmo que tudo o mais pareça bom?"**
+
+### 3. Explicação técnica
+
+Implementamos a primeira camada de **risk** e **uncertainty**
+determinística do projeto, com a mesma separação arquitetural das
+fases anteriores:
+
+- `src/risk_models.py` — `RiskInputs`, entrada explícita (sem nenhuma
+  integração ou orquestração ainda).
+- `src/risk_analysis.py` — `analyze_risk()`, sem nenhum import de
+  HTTP, Mercado Livre, Apify, `src.demand_analysis`,
+  `src.trend_analysis`, `src.competition_analysis`,
+  `src.margin_analysis`, `src.supplier_analysis`,
+  `src.logistics_analysis`, automação de navegador, ou LLM.
+
+- **Risk (risco)**: uma condição NEGATIVA CONHECIDA que pode acontecer
+  -- sabemos que existe a possibilidade, mesmo sem saber se vai
+  ocorrer. `supplier_count = 1` é risco observado: sabemos que existe
+  exatamente um fornecedor conhecido.
+- **Uncertainty (incerteza)**: a FALTA de informação suficiente para
+  saber algo -- não é evidência de nada. `supplier_count = None` é
+  incerteza: simplesmente não sabemos, e isso nunca é tratado como
+  prova de dependência de fonte única.
+- **Downside (desvantagem/perda potencial)**: o resultado negativo que
+  um risco pode causar, caso se materialize -- o motivo pelo qual
+  medir risco importa, mesmo sem prever SE ele vai se materializar.
+- **Concentration risk (risco de concentração)**: o risco que surge
+  quando uma parte desproporcional de algo (fornecimento, vendas,
+  aquisição de clientes) depende de uma única fonte.
+- **Dependency risk (risco de dependência)**: a versão geral do risco
+  de concentração aplicada a QUALQUER dependência estrutural --
+  fornecedor, canal de venda, método de aquisição.
+- **Supplier concentration (concentração de fornecedor)**: o caso
+  específico de dependency risk aplicado a fornecedores -- medido por
+  `supplier_count` (quantos fornecedores conhecidos existem) E
+  `primary_supplier_dependency_percent` (que fração do volume está
+  concentrada no maior deles). Os dois são COMPLEMENTARES, não
+  duplicados -- ver seção 4 para o exemplo que prova por quê.
+- **Platform dependency (dependência de plataforma)**: a fração das
+  vendas concentrada em um único canal/marketplace. O risco é a
+  CONCENTRAÇÃO num canal, nunca uma opinião sobre qual canal é esse --
+  este módulo nunca aponta ou culpa uma plataforma específica.
+- **Advertising dependency (dependência de publicidade)**: a fração da
+  aquisição de clientes/vendas que depende de publicidade paga. Mede
+  SÓ dependência/concentração -- nunca infere rentabilidade ou CAC
+  (Customer Acquisition Cost), que continua sendo responsabilidade
+  exclusiva da Análise de Margem.
+- **Supply continuity (continuidade de fornecimento)**: a capacidade
+  observada de manter o fornecimento sem interrupção ao longo do
+  tempo -- medida aqui por `historical_stockout_rate` e pelas
+  capacidades mitigadoras (`replacement_supplier_available`,
+  `alternative_fulfillment_available`).
+- **Stockout rate (taxa de ruptura de estoque)**: a frequência
+  HISTÓRICA OBSERVADA de episódios em que o estoque se esgotou. Nunca
+  inferida do nível de estoque ATUAL (isso pertence à Análise de
+  Fornecedor) -- `RiskInputs` nem tem um campo de estoque atual, o que
+  torna essa confusão arquiteturalmente impossível, não só indesejada.
+- **Price volatility (volatilidade de preço)**: o quanto o preço de
+  compra variou ao longo de observações históricas reais. Nunca
+  inferida de um único preço -- `observed_price_volatility_percent`
+  só aceita uma métrica JÁ CALCULADA a partir de histórico real.
+- **Historical observation (observação histórica)**: um fato medido no
+  passado, diferente de uma projeção ou estimativa para o futuro --
+  todos os campos de taxa desta fase (`historical_stockout_rate`,
+  `observed_price_volatility_percent`, `observed_return_rate`,
+  `observed_damage_rate`) exigem essa proveniência.
+- **Seasonality (sazonalidade)**: o quanto a demanda de um produto
+  depende de uma janela estreita do ano. Único campo desta fase numa
+  escala 0-100 (não 0-1) por definição explícita -- documentado com
+  destaque para nunca ser confundido com os campos de taxa.
+- **Regulatory uncertainty (incerteza regulatória)**: um sinalizador de
+  que existe uma questão de compliance NÃO RESOLVIDA que merece
+  investigação -- `True` NUNCA significa "este produto é ilegal," só
+  "isso precisa ser investigado." Contribui 70 (não 100) para a
+  dimensão de risco quando `True`, refletindo que uma bandeira não
+  investigada é um sinal mais fraco que um fato comprovado.
+- **IP/brand uncertainty (incerteza de marca/propriedade intelectual)**:
+  o mesmo conceito aplicado a marca registrada/autorização de
+  revenda/propriedade intelectual -- `True` NUNCA significa "isso
+  infringe," só "isso precisa ser investigado."
+- **Recall history (histórico de recall)**: um fato histórico concreto
+  -- já houve um recall conhecido deste produto. É evidência, não uma
+  determinação de segurança atual.
+- **Diversification (diversificação)**: o oposto estrutural da
+  concentração -- ter múltiplas fontes/canais/métodos independentes em
+  vez de depender de um só.
+- **Single point of failure (ponto único de falha)**: uma dependência
+  cuja falha sozinha pode parar todo o sistema -- um fornecedor, um
+  canal de venda, um método de fulfillment. Ter exatamente um NÃO
+  significa catástrofe automática; significa exposição de concentração
+  aumentada (ver seção 9 para o raciocínio completo).
+- **Redundancy (redundância)**: ter alternativas disponíveis caso a
+  dependência principal falhe -- medido aqui por
+  `replacement_supplier_available`/`alternative_fulfillment_available`.
+- **Risk indicator (indicador de risco)**: um sinal que aponta na
+  direção de um risco maior ou menor, sem ser uma prova definitiva --
+  a maioria dos campos desta fase funciona assim.
+- **Observed risk evidence (evidência de risco observada)**: um fato
+  real medido no passado (uma taxa, uma contagem, um histórico), em
+  contraste com uma inferência ou suposição.
+- **Severe risk (risco severo)**: uma evidência extremamente negativa
+  (ex.: taxa de devolução de 90%) que NÃO prova impossibilidade -- ver
+  "hard blocker" abaixo e a lição da Fase 9 aplicada aqui desde o
+  início.
+- **Hard blocker (bloqueador rígido)**: uma condição que prova que a
+  operação é atualmente IMPOSSÍVEL. Nesta fase, nenhum campo alcança
+  essa barra -- `_detect_blockers()` sempre devolve `[]`, e `BLOCKED`
+  é inalcançável por design, aplicando desde o primeiro dia a lição
+  corrigida na revisão de hardening da Fase 9 (ver Fase 9, seção 9).
+- **Risk score direction (direção da pontuação de risco)**:
+  `risk_score` segue **0 = risco baixo, 100 = risco alto** -- o OPOSTO
+  do contrato de Supplier/Logistics/Margin Score (onde maior é melhor),
+  intencionalmente, porque o Phase 1 já trata Risco como uma dimensão
+  negativa invertida. Como cada tabela de âncoras já aumenta
+  diretamente com a gravidade, não existe nenhuma etapa de inversão
+  interna -- o que elimina uma classe inteira do bug corrigido na Fase
+  9.
+- **Evidence completeness (completude de evidência)**: quanto
+  realmente sabemos sobre o risco deste produto, numa escala
+  ponderada -- separada da gravidade (`risk_score`), igual às fases
+  anteriores.
+- **Weighted completeness (completude ponderada)**: `EVIDENCE_WEIGHTS`
+  tem 14 itens somando exatamente 1.0 -- `regulatory_uncertainty` e
+  `primary_supplier_dependency_percent` entre os mais pesados, por
+  instrução explícita desta fase.
+- **Tri-state boolean (booleano de três estados)**: mesma disciplina
+  das Fases 8-9 -- `True`/`False`/`None`, nunca `None` tratado como
+  `False`.
+- **Risk aggregation (agregação de risco)**: combinar múltiplos
+  sinais de risco conhecidos numa única pontuação por dimensão, via
+  média ponderada -- nunca uma soma sem peso, nunca um "pior caso
+  automático."
+- **Renormalized weights (pesos renormalizados)**: quando uma dimensão
+  ou sinal é desconhecido, seu peso é removido do denominador da média
+  ponderada -- nunca tratado como contribuindo um valor de risco zero.
+- **Categorical semantics (semântica categórica)**: um status como
+  `LOW`/`MODERATE`/`HIGH`/`SEVERE` promete um significado específico e
+  estável -- cada palavra precisa significar exatamente o que diz, não
+  ser a pontuação disfarçada de texto.
+- **Deterministic risk model (modelo de risco determinístico)**:
+  `analyze_risk()` sempre devolve o mesmo resultado para a mesma
+  entrada -- sem IA, sem aleatoriedade.
+
+### 4. Conexão entre o simples e o técnico, com números
+
+**O exemplo da Empresa A vs. Empresa B**, com os números REAIS
+calculados por `analyze_risk()` (exatamente os valores do exemplo
+numérico pedido para esta fase):
+
+```
+Empresa A (diversificada): supplier_count=5,
+  primary_supplier_dependency_percent=0.30, platform_dependency_percent=0.40,
+  observed_price_volatility_percent=0.05, historical_stockout_rate=0.02,
+  observed_return_rate=0.03
+-> dependency_risk_score=22.88, supply_continuity_risk_score=8.00,
+   volatility_risk_score=15.0, operational_history_risk_score=9.0,
+   compliance_uncertainty_risk_score=None (não avaliado)
+-> Risk Score=14.26, Evidence Completeness=50.0%, Status=LOW
+```
+
+```
+Empresa B (concentrada): supplier_count=1,
+  primary_supplier_dependency_percent=1.00, platform_dependency_percent=1.00,
+  observed_price_volatility_percent=0.35, historical_stockout_rate=0.40,
+  observed_return_rate=0.25
+-> dependency_risk_score=100.0, supply_continuity_risk_score=90.0,
+   volatility_risk_score=81.25, operational_history_risk_score=60.0,
+   compliance_uncertainty_risk_score=None (não avaliado)
+-> Risk Score=83.82, Evidence Completeness=50.0%, Status=SEVERE
+```
+
+A Empresa B recebe uma pontuação de risco quase 6x maior (83.82 contra
+14.26), apesar de as duas terem a MESMA completude de evidência
+(50.0% -- os mesmos 6 campos são conhecidos nos dois casos, então a
+diferença de pontuação vem inteiramente da GRAVIDADE dos valores
+observados, não de quanto sabemos). Cada dimensão conta uma parte da
+história: `dependency_risk_score` salta de 22.88 para 100.0 porque
+`supplier_count` cai de 5 para 1 E `primary_supplier_dependency_percent`
+sobe de 0.30 para 1.00 -- os dois sinais apontam na mesma direção, e
+nenhum dos dois sozinho seria tão convincente quanto os dois juntos.
+`supply_continuity_risk_score` salta de 8.0 para 90.0 porque a taxa de
+ruptura de estoque histórica sobe de 2% para 40%. `volatility_risk_score`
+salta de 15.0 para 81.25 porque a volatilidade de preço sobe de 5% para
+35%. `operational_history_risk_score` salta de 9.0 para 60.0 porque a
+taxa de devolução sobe de 3% para 25%.
+
+**Por que `supplier_count` sozinho não basta (o cenário exato da seção
+8 da especificação):** um produto com `supplier_count=5` E
+`primary_supplier_dependency_percent=0.95` ainda recebe um
+`dependency_risk_score` ALTO (acima de 50, verificado em teste),
+porque o percentual de dependência -- a evidência mais precisa e
+direta -- é ponderado mais (peso 1.5) do que a contagem de fornecedores
+(peso 0.8). Ter 5 fornecedores no papel não ajuda se 95% do volume
+ainda vem de um só -- essa é exatamente a armadilha que a seção 8 da
+especificação desta fase pediu para evitar, e o motivo de os dois
+campos coexistirem como evidência complementar em vez de um substituir
+o outro.
+
+**Por que nenhum bloqueador real existe nesta fase (lição da Fase 9
+aplicada desde o início, não descoberta depois):** uma taxa de
+devolução observada de 90%, um recall conhecido, ou uma incerteza
+regulatória sinalizada são todos evidências SEVERAS de risco -- mas
+nenhum prova que a operação é IMPOSSÍVEL hoje. Um produto com histórico
+de recall ainda pode, hoje, ser vendido; é só arriscado fazê-lo. Por
+isso `_detect_blockers()` sempre devolve uma lista vazia, e `BLOCKED`
+permanece no vocabulário como um ponto de extensão reservado, nunca
+inventado -- prova verificada com um teste que constrói o PIOR cenário
+plausível (todos os sinalizadores de risco no máximo, todas as taxas em
+100%) e confirma que o status ainda assim nunca chega a `BLOCKED`
+(permanece `SEVERE`, com `Risk Score=91.5`).
+
+### 5. O que implementamos na prática
+
+- `src/risk_models.py`:
+  - `RiskInputs` — `product_name` (obrigatório) + 14 campos opcionais
+    (dependência, instabilidade observada, estrutura de mercado,
+    exposição, mitigantes operacionais). Validação: `supplier_count`
+    >= 0 se informado (0 é um valor real e distinto de `None` -- ver
+    seção 8 abaixo), taxas entre 0 e 1, `seasonality_level` entre 0 e
+    100 (explicitamente NÃO uma taxa 0-1), booleanos só
+    `True`/`False`/`None`. Sem regras de conflito entre campos --
+    `supplier_count` e `primary_supplier_dependency_percent` coexistem
+    deliberadamente como evidência complementar, não uma dupla
+    representação ambígua.
+- `src/risk_analysis.py`:
+  - `analyze_risk()` — calcula `dependency_risk_score`,
+    `supply_continuity_risk_score`, `volatility_risk_score`,
+    `operational_history_risk_score`, `compliance_uncertainty_risk_score`
+    (pesos 0.25/0.20/0.20/0.20/0.15), calcula
+    `evidence_completeness_score` (ponderado, 14 itens somando 1.0), e
+    só produz `risk_score` se a completude atingir 35%.
+    `_detect_blockers()` sempre devolve `[]` (nenhum campo atual prova
+    impossibilidade); taxas severas, recall, e incertezas geram
+    AVISOS via `_detect_warnings()`, nunca bloqueadores.
+  - `risk_status`: `BLOCKED` (inalcançável hoje, reservado) /
+    `INSUFFICIENT_DATA` (completude insuficiente) / `SEVERE` (score
+    >= 75) / `HIGH` (50-74) / `MODERATE` (25-49) / `LOW` (< 25).
+- `src/main.py` — nova opção `9. Analyze Risk`, com suporte explícito a
+  `y`/`n`/branco para os campos booleanos, e um parser dedicado
+  (`parse_optional_level_0_100`) para `seasonality_level` que nunca é
+  confundido com os parsers de taxa 0-1.
+- `tests/test_risk_models.py` e `tests/test_risk_analysis.py` --
+  cobrindo o exemplo A/B completo da especificação, direção da
+  pontuação (0 bom / 100 mau), `supplier_count=0` vs. `1`,
+  `supplier_count` alto vs. baixo, dependência primária alta vs.
+  baixa, o cenário "5 fornecedores mas 95% de dependência," dependência
+  de plataforma/publicidade alta vs. baixa, volatilidade/ruptura de
+  estoque/devolução/avaria zero vs. desconhecida vs. severa, cada
+  sinalizador booleano em `True`/`False`/`None`, nenhum bloqueador a
+  partir de incerteza ou taxas severas (incluindo o pior cenário
+  plausível), completude de evidência independente da pontuação de
+  risco, pontuação retida por baixa completude, dimensões ausentes
+  excluídas com pesos renormalizados, determinismo, limites de 0-100,
+  e uma verificação de que o módulo não importa nada dos módulos de
+  análise anteriores.
+- Validação ao vivo via CLI com o cenário EXATO da Empresa B: Risk
+  Score 83.82, Evidence Completeness 50.00%, Status SEVERE -- cada
+  subcomponente confirmado à mão contra a fórmula, e os números da CLI
+  confirmados como idênticos aos pré-calculados, antes de aceitar o
+  resultado.
+- Revisão semântica (seção 32) incluiu uma varredura de monotonicidade
+  programática (não apenas testes pontuais): para cada campo que deveria
+  aumentar o risco, uma sequência de valores crescentes foi testada
+  para confirmar que a pontuação da dimensão nunca diminui (ou, para
+  `supplier_count`, nunca aumenta) -- nenhuma inversão de direção
+  encontrada.
+
+### 6. Termos técnicos aprendidos
+
+- **termo:** Risk (risco)
+  **definição:** uma condição negativa conhecida que pode acontecer.
+  **como apareceu no projeto:** o nome da fase inteira e da pergunta de
+  negócio central.
+
+- **termo:** Uncertainty (incerteza)
+  **definição:** a falta de informação suficiente para saber algo --
+  nunca evidência de risco por si só.
+  **como apareceu no projeto:** todo campo `None` em `RiskInputs`.
+
+- **termo:** Downside (desvantagem/perda potencial)
+  **definição:** o resultado negativo que um risco pode causar, caso se
+  materialize.
+  **como apareceu no projeto:** o motivo de negócio por trás de toda a
+  fase.
+
+- **termo:** Concentration risk (risco de concentração)
+  **definição:** o risco de uma parte desproporcional de algo depender
+  de uma única fonte.
+  **como apareceu no projeto:** `CONCENTRATION_RISK_ANCHORS`, reutilizado
+  para fornecedor, plataforma, e publicidade.
+
+- **termo:** Dependency risk (risco de dependência)
+  **definição:** a versão geral do risco de concentração aplicada a
+  qualquer dependência estrutural.
+  **como apareceu no projeto:** `dependency_risk_score`, a dimensão de
+  maior peso (0.25).
+
+- **termo:** Supplier concentration (concentração de fornecedor)
+  **definição:** o quanto o fornecimento depende de um número pequeno
+  de fornecedores, ou de um fornecedor dominante.
+  **como apareceu no projeto:** `supplier_count` +
+  `primary_supplier_dependency_percent`, tratados como complementares.
+
+- **termo:** Platform dependency (dependência de plataforma)
+  **definição:** a fração das vendas concentrada em um único canal.
+  **como apareceu no projeto:** `platform_dependency_percent`.
+
+- **termo:** Advertising dependency (dependência de publicidade)
+  **definição:** a fração da aquisição de clientes que depende de
+  publicidade paga.
+  **como apareceu no projeto:** `advertising_dependency_percent`,
+  nunca usado para inferir CAC ou rentabilidade.
+
+- **termo:** Supply continuity (continuidade de fornecimento)
+  **definição:** a capacidade observada de manter o fornecimento sem
+  interrupção ao longo do tempo.
+  **como apareceu no projeto:** `supply_continuity_risk_score`.
+
+- **termo:** Stockout rate (taxa de ruptura de estoque)
+  **definição:** a frequência histórica observada de episódios de
+  estoque esgotado.
+  **como apareceu no projeto:** `historical_stockout_rate`, nunca
+  inferida do estoque atual.
+
+- **termo:** Price volatility (volatilidade de preço)
+  **definição:** o quanto um preço de compra variou ao longo de
+  observações históricas reais.
+  **como apareceu no projeto:** `observed_price_volatility_percent`.
+
+- **termo:** Historical observation (observação histórica)
+  **definição:** um fato medido no passado, diferente de uma projeção.
+  **como apareceu no projeto:** o requisito de proveniência de todos
+  os campos de taxa desta fase.
+
+- **termo:** Seasonality (sazonalidade)
+  **definição:** o quanto a demanda depende de uma janela estreita do
+  ano.
+  **como apareceu no projeto:** `seasonality_level`, numa escala 0-100
+  explícita.
+
+- **termo:** Regulatory uncertainty (incerteza regulatória)
+  **definição:** um sinalizador de questão de compliance não resolvida
+  -- nunca uma conclusão legal.
+  **como apareceu no projeto:** `regulatory_uncertainty`.
+
+- **termo:** IP/brand uncertainty (incerteza de marca/propriedade
+  intelectual)
+  **definição:** um sinalizador de preocupação não resolvida sobre
+  marca/IP -- nunca uma conclusão de infração.
+  **como apareceu no projeto:** `brand_ip_uncertainty`.
+
+- **termo:** Recall history (histórico de recall)
+  **definição:** um fato histórico concreto de recall anterior --
+  evidência, não determinação de segurança.
+  **como apareceu no projeto:** `recall_history_present`.
+
+- **termo:** Diversification (diversificação)
+  **definição:** ter múltiplas fontes/canais/métodos independentes em
+  vez de depender de um só.
+  **como apareceu no projeto:** o oposto conceitual de tudo que
+  `dependency_risk_score` mede.
+
+- **termo:** Single point of failure (ponto único de falha)
+  **definição:** uma dependência cuja falha sozinha pode parar todo o
+  sistema -- não prova catástrofe automática, apenas exposição.
+  **como apareceu no projeto:** o conceito por trás de
+  `supplier_count=1`/`platform_dependency_percent=1.0`.
+
+- **termo:** Redundancy (redundância)
+  **definição:** ter alternativas disponíveis caso a dependência
+  principal falhe.
+  **como apareceu no projeto:**
+  `replacement_supplier_available`/`alternative_fulfillment_available`.
+
+- **termo:** Risk indicator (indicador de risco)
+  **definição:** um sinal que aponta para mais ou menos risco, sem ser
+  prova definitiva.
+  **como apareceu no projeto:** a maioria dos campos de `RiskInputs`.
+
+- **termo:** Observed risk evidence (evidência de risco observada)
+  **definição:** um fato real medido no passado, em contraste com uma
+  inferência.
+  **como apareceu no projeto:** todos os campos `observed_*`/
+  `historical_*`.
+
+- **termo:** Severe risk (risco severo)
+  **definição:** evidência extremamente negativa que não prova
+  impossibilidade.
+  **como apareceu no projeto:** os avisos gerados por
+  `_detect_warnings()` para taxas >= 50%/30%.
+
+- **termo:** Hard blocker (bloqueador rígido)
+  **definição:** uma condição que prova impossibilidade operacional
+  atual -- nenhuma existe nesta fase.
+  **como apareceu no projeto:** `_detect_blockers()`, sempre `[]`.
+
+- **termo:** Risk score direction (direção da pontuação de risco)
+  **definição:** a convenção de que 0 significa risco baixo e 100
+  significa risco alto -- o oposto de Supplier/Logistics/Margin Score.
+  **como apareceu no projeto:** `risk_score`, documentado e testado
+  explicitamente contra inversão acidental.
+
+- **termo:** Evidence completeness (completude de evidência)
+  **definição:** quanto se sabe sobre algo, numa escala mensurável.
+  **como apareceu no projeto:** `evidence_completeness_score`.
+
+- **termo:** Weighted completeness (completude ponderada)
+  **definição:** uma medida de completude em que cada campo contribui
+  uma fração diferente do total.
+  **como apareceu no projeto:** `EVIDENCE_WEIGHTS`, 14 itens somando
+  exatamente 1.0.
+
+- **termo:** Tri-state boolean (booleano de três estados)
+  **definição:** um valor `True`/`False`/`None`, nunca reduzido a dois
+  estados.
+  **como apareceu no projeto:** os 5 campos booleanos de `RiskInputs`.
+
+- **termo:** Risk aggregation (agregação de risco)
+  **definição:** combinar múltiplos sinais de risco numa única
+  pontuação por dimensão via média ponderada.
+  **como apareceu no projeto:** `_weighted_average()`, usado pelas 5
+  funções de dimensão.
+
+- **termo:** Renormalized weights (pesos renormalizados)
+  **definição:** remover o peso de um sinal/dimensão desconhecido do
+  denominador da média ponderada, em vez de tratá-lo como risco zero.
+  **como apareceu no projeto:** toda função de dimensão em
+  `src/risk_analysis.py`.
+
+- **termo:** Categorical semantics (semântica categórica)
+  **definição:** a garantia de que um status como `SEVERE` significa
+  exatamente o que diz, de forma estável.
+  **como apareceu no projeto:** `risk_status`, com bandas de pontuação
+  explícitas e documentadas.
+
+- **termo:** Deterministic risk model (modelo de risco determinístico)
+  **definição:** um cálculo cujo resultado depende apenas da entrada --
+  sempre o mesmo para a mesma entrada.
+  **como apareceu no projeto:** `analyze_risk()` inteiro.
+
+### 7. Comandos/ferramentas usados
+
+```bash
+python -m src.main          # executar a CLI (opção 9 = Analyze Risk)
+python -m pytest -v         # rodar todos os testes via módulo
+pytest -v                   # rodar todos os testes direto
+```
+
+Ferramentas: Python 3.12, `decimal.Decimal`, `dataclasses`, `pytest` --
+nenhuma dependência nova. Como as Fases 7-9, funciona 100% offline.
+
+### 8. Como explicar isso para um recrutador ou cliente
+
+"Eu construí um motor de avaliação de risco determinístico que separa
+desvio observado de incerteza, modela risco de dependência e
+concentração, preserva evidência desconhecida em vez de assumir baixo
+risco, e agrega múltiplas dimensões de risco sem converter resultados
+severos em falsos bloqueadores rígidos."
+
+Para defender essa frase numa entrevista:
+
+- "Separa desvio observado de incerteza": `supplier_count = 1` e
+  `supplier_count = None` não são a mesma coisa -- o primeiro é um
+  fato sobre concentração; o segundo é apenas falta de informação.
+  Confundir os dois faria o sistema "inventar" risco a partir do
+  silêncio, ou pior, tratar silêncio como segurança.
+- "Modela risco de dependência e concentração": uma contagem de
+  fornecedores por si só pode mentir -- 5 fornecedores "no papel" com
+  95% do volume concentrado num só é tão arriscado quanto ter 1
+  fornecedor; por isso os dois sinais coexistem como evidência
+  complementar, com pesos diferentes, em vez de um substituir o outro.
+- "Preserva evidência desconhecida em vez de assumir baixo risco": se
+  eu não sei a taxa histórica de ruptura de estoque, o sistema não
+  assume que ela é zero -- ele exclui esse sinal do cálculo e expõe a
+  completude de evidência separadamente, para que "parece seguro" e
+  "sabemos pouco" nunca sejam confundidos.
+- "Agrega múltiplas dimensões sem converter resultados severos em
+  falsos bloqueadores": uma taxa de devolução de 90% é evidência
+  péssima, mas não prova que vender é impossível -- os outros 10% que
+  não foram devolvidos provam o contrário. Meu sistema trata isso como
+  risco severo (reflete na pontuação, gera um aviso), nunca como uma
+  certeza categórica inventada.
+
+### 9. O que devo lembrar desta fase
+
+- **Risco e incerteza são coisas diferentes, e confundi-los é o erro
+  mais fácil de cometer nesta fase** -- `supplier_count = 1` é uma
+  observação; `supplier_count = None` é um vazio de informação. Tratar
+  o segundo como o primeiro inventaria risco a partir do silêncio;
+  tratar o segundo como seguro inventaria segurança a partir do
+  silêncio. Os dois erros são igualmente desonestos.
+- **Um sinal "bom" isolado pode mentir sobre concentração** -- 5
+  fornecedores parecem diversificados até você perguntar quanto cada
+  um realmente representa do volume. A solução não é escolher um
+  campo e descartar o outro, é tratá-los como evidência complementar
+  com pesos diferentes, refletindo qual é mais preciso.
+- **A lição da Fase 9 ("resultado ruim != operação impossível") foi
+  aplicada aqui DESDE O PRIMEIRO DIA, não descoberta depois** -- nenhum
+  bloqueador foi implementado para taxas severas, recall, ou incerteza
+  regulatória/de marca, porque nenhuma dessas evidências prova
+  impossibilidade, só gravidade. `BLOCKED` ficou no vocabulário como
+  ponto de extensão reservado, nunca como uma tentação de uso
+  prematuro.
+- **Direção da pontuação é um contrato externo, não uma escolha de
+  implementação interna** -- Risco é 0=bom/100=mau, o oposto de
+  Fornecedor/Logística/Margem, porque é assim que a Fase 1 já trata a
+  dimensão de Risco. Escrever cada tabela de âncoras para aumentar
+  diretamente com a gravidade (em vez de calcular uma "bondade" e
+  inverter depois) evita reintroduzir o bug de direção corrigido na
+  Fase 9.
+- **Incerteza regulatória e de marca são bandeiras de investigação, não
+  conclusões jurídicas** -- este projeto nunca declara um produto
+  ilegal, nem afirma uma infração de propriedade intelectual. Fazer
+  isso exigiria autoridade e informação que este módulo determinístico
+  não tem e não deveria fingir ter.
+- **Uma varredura de monotonicidade vale mais que testes pontuais para
+  pegar bugs de direção** -- em vez de testar só "A > B" num par de
+  cenários, testar uma sequência inteira de valores crescentes (ex.:
+  volatilidade de 0% a 100%) e confirmar que a pontuação nunca inverte
+  de direção captura uma classe de bug que um teste pontual poderia
+  deixar passar por coincidência.

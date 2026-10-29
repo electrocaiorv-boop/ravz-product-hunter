@@ -588,6 +588,104 @@ entirely on explicit user input.
 - [ ] Regression tests: full suite still passing
       (`python -m pytest -v` and `pytest -v`)
 
+### Risk Analysis inputs (Phase 10)
+
+Phase 10, like Phase 7-9, has NO live external dependency -- no HTTP,
+no Mercado Livre, no Apify, no orchestrator, no scraping.
+`src/risk_models.py` and `src/risk_analysis.py` operate entirely on
+explicit user input.
+
+- [ ] **`RiskInputs` schema**: re-confirm all 14 optional fields still
+      match `src/risk_models.py`'s field list and docstring if the
+      model is ever extended
+- [ ] **Risk score direction**: re-confirm `risk_score` stays
+      `0 = low apparent risk, 100 = high apparent risk` -- the OPPOSITE
+      contract from Supplier/Logistics/Margin Score. Re-run
+      `test_risk_score_direction_zero_is_low_risk_favorable` and
+      `test_risk_score_direction_100_is_high_risk_unfavorable` after any
+      change to an anchor table; these are the tests most likely to
+      catch an accidentally-inverted anchor. Also re-run the
+      monotonicity sweep pattern from the Phase 10 hardening review
+      (sweep each risk-increasing field across its range, assert the
+      dimension score never moves the wrong way) after editing any
+      anchor table.
+- [ ] **Risk vs. uncertainty semantics**: re-confirm every dimension
+      function excludes `None` sub-signals from its weighted average
+      instead of defaulting them to a "safe" (low-risk) value --
+      missing evidence must never be silently rewarded with a low
+      `risk_score`
+- [ ] **Tri-state booleans**: re-run the parametrized
+      `test_*_true_false_none` tests in `tests/test_risk_analysis.py`
+      after any refactor -- these are the tests most likely to silently
+      break if someone "simplifies" `None`-handling into `False` later
+- [ ] **Rate conventions**: re-confirm every percentage field except
+      `seasonality_level` stays a `[0, 1]` fraction, and that
+      `seasonality_level` stays a `[0, 100]` integer level with its own
+      validation message explicitly distinguishing it from the rate
+      fields -- re-run `test_seasonality_level_is_not_a_0_1_rate`
+- [ ] **Dependency fields / concentration logic**: re-confirm
+      `supplier_count` and `primary_supplier_dependency_percent` remain
+      separate, complementary sub-signals (never collapsed into one,
+      never allowed to let a "good" count wash out a high dependency
+      percent) -- re-run
+      `test_supplier_count_five_but_high_dependency_percent_is_still_high_risk`
+- [ ] **`supplier_count = 0` semantics**: re-confirm this still clamps
+      to the same maximal risk as `supplier_count = 1` (via anchor
+      clamping, not a special case) and is NEVER treated as a hard
+      blocker -- it does not prove zero suppliers exist anywhere, only
+      that none are known to this assessment
+- [ ] **Historical volatility/stockout requirements**: re-confirm
+      `observed_price_volatility_percent` and `historical_stockout_rate`
+      remain accept-only-already-derived-metric fields -- neither this
+      module nor any future caller should compute volatility from a
+      single price or stockout frequency from a current stock level
+      (that belongs to Supplier Analysis, which has no field shared
+      with this model)
+- [ ] **Severe risk vs. blocker**: re-confirm `_detect_blockers()`
+      still returns `[]` unconditionally -- `BLOCKED` must remain
+      UNREACHABLE from any current input combination (see
+      `test_no_hard_blocker_from_worst_case_input_combination`). Do NOT
+      add a blocker rule for a severe observed rate, recall history, or
+      an uncertainty flag -- none of those prove impossibility, only
+      severity. That belongs in `_detect_warnings()`.
+- [ ] **Compliance uncertainty wording**: re-confirm
+      `regulatory_uncertainty`/`brand_ip_uncertainty` are never described
+      anywhere (code, CLI output, docs) as a legal conclusion or an
+      infringement finding -- grep for "illegal"/"infring" and verify
+      every match is in a NEGATIVE framing ("never a legal conclusion")
+- [ ] **Score weights**: `WEIGHT_DEPENDENCY_RISK` (0.25) /
+      `WEIGHT_SUPPLY_CONTINUITY_RISK` (0.20) / `WEIGHT_VOLATILITY_RISK`
+      (0.20) / `WEIGHT_OPERATIONAL_HISTORY_RISK` (0.20) /
+      `WEIGHT_COMPLIANCE_UNCERTAINTY_RISK` (0.15) and all piecewise-linear
+      anchors are provisional, documented, recalibrate only against real
+      outcome data
+- [ ] **Completeness weights**: re-verify `EVIDENCE_WEIGHTS` in
+      `src/risk_analysis.py` still sums to exactly 1.0 after any edit
+      (`sum(EVIDENCE_WEIGHTS.values()) == 1.0`) -- this is easy to
+      silently break by adding/removing a field without rebalancing
+- [ ] **Score-withholding threshold**: `MIN_COMPLETENESS_FOR_SCORE`
+      (0.35) is chosen to match Phase 8's threshold deliberately (risk
+      evidence is similarly investigative/relationship-based), not
+      copied mechanically -- document any change to this value with the
+      same reasoning standard
+- [ ] **Future orchestration boundary**: if/when a real orchestrator
+      composes outputs from `src.demand_analysis`/`src.trend_analysis`/
+      `src.competition_analysis`/`src.margin_analysis`/
+      `src.supplier_analysis`/`src.logistics_analysis` into a
+      `RiskInputs` instance, that composition belongs in the
+      orchestrator, NOT inside `src/risk_analysis.py`
+- [ ] **No direct imports from prior analysis modules**: re-confirm
+      `src/risk_models.py` and `src/risk_analysis.py` still import
+      NOTHING from any prior analysis module or `src.integrations`
+      (`grep -n "^import\|^from" src/risk_*.py` should show only
+      `dataclasses`/`decimal`/`src.risk_models`) -- re-run
+      `test_risk_analysis_module_imports_nothing_from_prior_analysis_modules`,
+      which checks only actual import statement lines (not docstring
+      prose, which legitimately names these modules to document their
+      absence)
+- [ ] Regression tests: full suite still passing
+      (`python -m pytest -v` and `pytest -v`)
+
 ### Shared
 
 1. Check `pip list --outdated` for `requests`, `python-dotenv`, and

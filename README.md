@@ -990,6 +990,134 @@ or Margin Analysis (no `sale_price` field, no profitability math).
   no universal divisor is assumed.
 - Not validated against real outcomes.
 
+## Phase 10 scope
+
+Phase 10 adds a deterministic **Risk Analysis** layer. It answers *"what
+could make this product opportunity fail, become unstable, or create
+disproportionate downside — even if the other dimensions look good?"*
+— distinct from Demand, Competition, Margin, Supplier, and Logistics.
+No orchestration yet: every field is explicit, manually-supplied input,
+same strategy as Phase 7/8/9.
+
+### Risk Score direction is the opposite of Supplier/Logistics/Margin
+
+`risk_score`: **0 = low apparent risk, 100 = high apparent risk** —
+matching Phase 1's existing convention of treating Risk as an inverted
+negative dimension. This is intentionally the *opposite* contract from
+Supplier Score, Logistics Score, and Margin Score (where higher is
+better). Every anchor table in `src/risk_analysis.py` is written to
+increase directly with badness, so there is no internal "goodness"
+framing to invert — removing an entire class of the direction bug
+fixed in Phase 9's hardening review.
+
+### Risk vs. uncertainty
+
+`supplier_count = 1` is OBSERVED concentration risk. `supplier_count =
+None` is UNCERTAINTY — we simply don't know, and that is never scored
+as if it were evidence of anything. This is why every result carries
+both a `risk_score` AND a separate `evidence_completeness_score`.
+
+### Dependency risk: supplier_count and dependency-percent are complementary
+
+`supplier_count` (how many known alternatives exist) and
+`primary_supplier_dependency_percent` (how much volume is actually
+concentrated in the largest one) measure related but different things.
+5 known suppliers where one still accounts for 95% of volume is still
+highly concentrated — so both are kept as separate sub-signals, with
+the percent weighted higher (1.5) since it's the more precise, direct
+measure.
+
+### Hard blockers: none are reachable, applying the Phase 9 lesson from day one
+
+Nothing in `RiskInputs` can prove an opportunity is currently
+*impossible* — a 100% observed return rate, a known recall, or an
+unresolved regulatory flag are all severe risk **evidence**, not proof
+of impossibility. `_detect_blockers()` always returns `[]`; `BLOCKED`
+stays in the vocabulary as a reserved extension point, never invented.
+Severe evidence instead flows into the ordinary weighted dimension
+scores and produces an explanatory warning.
+
+### Risk dimensions (base weights, renormalized over what's known)
+
+| Dimension | Weight | From |
+|---|---|---|
+| Dependency risk | 0.25 | supplier count / primary supplier dependency / platform dependency / advertising dependency |
+| Supply continuity risk | 0.20 | historical stockout rate / replacement supplier / alternative fulfillment |
+| Volatility risk | 0.20 | observed price volatility / seasonality level |
+| Operational history risk | 0.20 | observed return rate / observed damage rate / recall history |
+| Compliance/IP uncertainty risk | 0.15 | regulatory uncertainty / brand-IP uncertainty (weighted lowest — an unresolved flag is a weaker claim than directly observed evidence) |
+
+### Regulatory/brand-IP uncertainty: investigation flags, never legal conclusions
+
+`regulatory_uncertainty=True` means "unresolved compliance question
+requiring investigation" — **not** "this product is illegal."
+`brand_ip_uncertainty=True` means "unresolved trademark/IP concern" —
+**not** "this infringes." Both contribute 70 (not 100) to their
+dimension when `True`, reflecting that an un-investigated flag is a
+weaker signal than a proven fact.
+
+### Rate semantics: 0-1 fractions, with one explicit exception
+
+Every percentage/rate field is a fraction in `[0, 1]`, consistent with
+every prior phase's CLI convention. The one deliberate exception is
+`seasonality_level`, an integer on a `[0, 100]` scale by definition —
+called out explicitly in its validation message and CLI prompt so the
+two conventions are never confused.
+
+### Future orchestration boundary
+
+`src/risk_models.py` and `src/risk_analysis.py` import nothing from any
+prior analysis module (`src.demand_analysis`, `src.trend_analysis`,
+`src.competition_analysis`, `src.margin_analysis`,
+`src.supplier_analysis`, `src.logistics_analysis`) or `src.integrations`
+— not because `src.integrations` is empty (it already contains the
+Mercado Livre integration since Phase 3 and the Apify/Google Trends
+integration since Phase 4), but because Risk Analysis must stay
+decoupled from how any upstream data was obtained or computed. No
+external integration currently populates `RiskInputs` — its inputs are
+explicit/manual today, same as Phase 7/8/9's own models before any
+integration existed for them. A future orchestrator may one day compose
+normalized outputs from those already-integrated phases into a
+`RiskInputs` instance — Risk Analysis itself stays deterministic and
+decoupled from how any of those scores are computed internally.
+
+### What's new
+
+- `src/risk_models.py` — `RiskInputs`
+- `src/risk_analysis.py` — `RiskAnalysisResult`, `analyze_risk()`
+- `src/main.py` — CLI option `9. Analyze Risk`
+- `tests/test_risk_models.py`, `tests/test_risk_analysis.py`
+
+### Run it
+
+```bash
+python -m src.main
+```
+Choose option `9`. Only product name is mandatory; every other prompt
+accepts `y`/`n`/blank or a blank number for unknown.
+
+### Important design rule
+
+The Risk Score is **not** fed into the Phase 1 Opportunity Scoring
+Engine yet — this phase only builds and validates Risk Analysis in
+isolation. It never duplicates Competition/Margin/Supplier/Logistics
+formulas (no imports from any of those modules).
+
+### Limitations
+
+- `risk_score` requires ≥35% weighted evidence completeness — chosen
+  to match Phase 8's threshold (risk evidence, like supplier evidence,
+  is dominated by investigative/relationship-based information rather
+  than directly measurable physical facts), not copied mechanically.
+- All score anchors, weights, and warning thresholds are configurable
+  heuristics, explicitly not proven business rules.
+- `BLOCKED` is currently unreachable — a deliberate consequence of what
+  this phase's fields can and cannot prove, not a missing feature.
+- `seasonality_level` and future demand-variability signals are
+  currently manual judgment calls pending a real Trend Analysis
+  integration.
+- Not validated against real outcomes.
+
 ## Architecture direction
 
 The system is designed to grow into an orchestrator coordinating

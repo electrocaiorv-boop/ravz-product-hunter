@@ -3,7 +3,7 @@
 Phase 2: Manual Analyzer. Phase 3: Mercado Livre search. Phase 4: Trend
 analysis. Phase 5: Demand analysis. Phase 6: Competition analysis.
 Phase 7: Margin analysis. Phase 8: Supplier analysis. Phase 9:
-Logistics analysis.
+Logistics analysis. Phase 10: Risk analysis.
 
 This module is the presentation layer: it collects input from the user,
 delegates all scoring logic to src.models / src.scoring, all Mercado
@@ -13,9 +13,10 @@ to src.trend_analysis, all demand math to src.demand_models /
 src.demand_analysis, all competition math to src.competition_models /
 src.competition_analysis, all margin/unit-economics math to
 src.margin_models / src.margin_analysis, all supplier-viability math to
-src.supplier_models / src.supplier_analysis, and all logistics math to
-src.logistics_models / src.logistics_analysis, then renders the result.
-It contains no scoring math and no HTTP logic of its own.
+src.supplier_models / src.supplier_analysis, all logistics math to
+src.logistics_models / src.logistics_analysis, and all risk math to
+src.risk_models / src.risk_analysis, then renders the result. It
+contains no scoring math and no HTTP logic of its own.
 
 Input-collecting functions accept an injectable `input_func` so the
 retry/validation logic can be unit tested without calling the real
@@ -40,6 +41,8 @@ from src.logistics_models import LogisticsInputs
 from src.margin_analysis import analyze_margin
 from src.margin_models import MarginInputs
 from src.models import ComponentScores, Product
+from src.risk_analysis import analyze_risk
+from src.risk_models import RiskInputs
 from src.scoring import score_opportunity
 from src.supplier_analysis import analyze_supplier
 from src.supplier_models import SupplierInputs
@@ -86,10 +89,10 @@ def parse_non_empty_text(raw: str) -> str:
 
 
 def parse_menu_choice(raw: str) -> int:
-    """Validate that raw text is one of the main menu options (1-8)."""
+    """Validate that raw text is one of the main menu options (1-9)."""
     text = raw.strip()
-    if text not in {"1", "2", "3", "4", "5", "6", "7", "8"}:
-        raise ValueError("choose 1, 2, 3, 4, 5, 6, 7 or 8")
+    if text not in {"1", "2", "3", "4", "5", "6", "7", "8", "9"}:
+        raise ValueError("choose 1, 2, 3, 4, 5, 6, 7, 8 or 9")
     return int(text)
 
 
@@ -202,6 +205,20 @@ def parse_optional_rating(raw: str) -> Decimal | None:
         raise ValueError(f"'{raw}' is not a valid number")
     if not (0 <= value <= 5):
         raise ValueError(f"{value} must be on a 0-5 scale")
+    return value
+
+
+def parse_optional_level_0_100(raw: str) -> int | None:
+    """Parse an optional level on a 0-100 scale -- NOT a 0-1 rate. Blank means unknown."""
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        value = int(text)
+    except ValueError:
+        raise ValueError(f"'{raw}' is not a whole number")
+    if not (0 <= value <= 100):
+        raise ValueError(f"{value} must be between 0 and 100 (this is a 0-100 level, not a 0-1 rate)")
     return value
 
 
@@ -1164,6 +1181,168 @@ def run_logistics_analysis(input_func=input) -> None:
     print(format_logistics_report(inputs, result))
 
 
+def format_risk_report(inputs, result) -> str:
+    """Render RiskInputs + RiskAnalysisResult as a human-readable report.
+
+    Makes it obvious that unknown != low risk (missing fields are shown
+    as "not available", never scored as favorable) and that a low Risk
+    Score != high confidence -- the two are always shown side by side.
+    """
+    lines = [
+        "=" * 50,
+        "RISK ANALYSIS REPORT (PROVISIONAL)",
+        "=" * 50,
+        f"Product: {result.product_name}",
+        "",
+        f"Risk Score: {_format_optional(result.risk_score)} "
+        "(PROVISIONAL -- 0 = low apparent risk, 100 = high apparent risk; "
+        "business heuristic, not empirically validated)",
+        f"Risk Evidence Completeness: {result.evidence_completeness_score:.2f}%",
+        f"Risk Status: {result.risk_status}",
+        "",
+        "Dimensions (None = excluded, not penalized):",
+        f"  Dependency risk:              {_format_optional(result.dependency_risk_score)}",
+        f"  Supply continuity risk:       {_format_optional(result.supply_continuity_risk_score)}",
+        f"  Volatility risk:              {_format_optional(result.volatility_risk_score)}",
+        f"  Operational history risk:     {_format_optional(result.operational_history_risk_score)}",
+        f"  Compliance/IP uncertainty risk: {_format_optional(result.compliance_uncertainty_risk_score)}",
+    ]
+
+    lines.append("")
+    lines.append("Observed:")
+    for key, value in result.observed.items():
+        lines.append(f"  - {key}: {_format_optional(value)}")
+
+    lines.append("")
+    lines.append("Derived:")
+    for key, value in result.derived.items():
+        lines.append(f"  - {key}: {_format_optional(value)}")
+
+    lines.append("")
+    lines.append("Unavailable / unknown:")
+    for item in result.unavailable:
+        lines.append(f"  - {item}")
+
+    lines.append("")
+    lines.append("Blockers:")
+    if result.blockers:
+        for blocker in result.blockers:
+            lines.append(f"  - {blocker}")
+    else:
+        lines.append("  (none detected)")
+
+    if result.warnings:
+        lines.append("")
+        lines.append("Warnings:")
+        for warning in result.warnings:
+            lines.append(f"  - {warning}")
+
+    if result.notes:
+        lines.append("")
+        lines.append("Notes:")
+        for note in result.notes:
+            lines.append(f"  - {note}")
+
+    lines.append("")
+    lines.append(
+        "regulatory_uncertainty and brand_ip_uncertainty are investigation flags, "
+        "never legal/infringement conclusions."
+    )
+    lines.append(
+        "This Risk Score is NOT fed into the Phase 1 Opportunity Scoring Engine yet."
+    )
+    lines.append("=" * 50)
+    return "\n".join(lines)
+
+
+def run_risk_analysis(input_func=input) -> None:
+    """Run the Phase 10 risk-analysis flow end to end.
+
+    Only product_name is mandatory. Every other prompt accepts a blank
+    answer for "unknown" -- blank is never silently treated as False,
+    zero, or low risk.
+    """
+    print("\nAnalyze Risk")
+    product_name = ask("Product name: ", parse_non_empty_text, input_func)
+
+    print("\nDependency -- leave blank if unknown:")
+    supplier_count = ask("Supplier count (blank if unknown): ", parse_optional_int, input_func)
+    primary_supplier_dependency_percent = ask(
+        "Primary supplier dependency, 0-1 (blank if unknown): ", parse_optional_rate, input_func
+    )
+    platform_dependency_percent = ask(
+        "Platform dependency, 0-1 (blank if unknown): ", parse_optional_rate, input_func
+    )
+    advertising_dependency_percent = ask(
+        "Advertising dependency, 0-1 (blank if unknown): ", parse_optional_rate, input_func
+    )
+
+    print("\nHistorical/observed -- real observations only, never estimated:")
+    observed_price_volatility_percent = ask(
+        "Observed price volatility, 0-1 (blank if unknown): ", parse_optional_rate, input_func
+    )
+    historical_stockout_rate = ask(
+        "Historical stockout rate, 0-1 (blank if unknown): ", parse_optional_rate, input_func
+    )
+    observed_return_rate = ask(
+        "Observed return rate, 0-1 (blank if unknown): ", parse_optional_rate, input_func
+    )
+    observed_damage_rate = ask(
+        "Observed damage rate, 0-1 (blank if unknown): ", parse_optional_rate, input_func
+    )
+
+    print("\nMarket:")
+    seasonality_level = ask(
+        "Seasonality level, 0-100 scale (NOT 0-1; blank if unknown): ",
+        parse_optional_level_0_100,
+        input_func,
+    )
+
+    print("\nRisk flags -- y/n/blank (investigation flags, never legal conclusions):")
+    regulatory_uncertainty = ask(
+        "Regulatory uncertainty? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+    brand_ip_uncertainty = ask(
+        "Brand/IP uncertainty? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+    recall_history_present = ask(
+        "Recall history present? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+    replacement_supplier_available = ask(
+        "Replacement supplier available? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+    alternative_fulfillment_available = ask(
+        "Alternative fulfillment available? y/n (blank if unknown): ", parse_optional_bool, input_func
+    )
+
+    try:
+        inputs = RiskInputs(
+            product_name=product_name,
+            supplier_count=supplier_count,
+            primary_supplier_dependency_percent=primary_supplier_dependency_percent,
+            platform_dependency_percent=platform_dependency_percent,
+            advertising_dependency_percent=advertising_dependency_percent,
+            observed_price_volatility_percent=observed_price_volatility_percent,
+            historical_stockout_rate=historical_stockout_rate,
+            observed_return_rate=observed_return_rate,
+            observed_damage_rate=observed_damage_rate,
+            seasonality_level=seasonality_level,
+            regulatory_uncertainty=regulatory_uncertainty,
+            brand_ip_uncertainty=brand_ip_uncertainty,
+            recall_history_present=recall_history_present,
+            replacement_supplier_available=replacement_supplier_available,
+            alternative_fulfillment_available=alternative_fulfillment_available,
+        )
+    except ValueError as exc:
+        print(f"\nInvalid input: {exc}")
+        return
+
+    result = analyze_risk(inputs)
+
+    print()
+    print(format_risk_report(inputs, result))
+
+
 def main() -> None:
     print("RAVZ Product Hunter")
     print("1. Manual Product Analyzer")
@@ -1174,8 +1353,9 @@ def main() -> None:
     print("6. Analyze Margin")
     print("7. Analyze Supplier")
     print("8. Analyze Logistics")
+    print("9. Analyze Risk")
 
-    choice = ask("Choose an option (1-8): ", parse_menu_choice)
+    choice = ask("Choose an option (1-9): ", parse_menu_choice)
 
     if choice == 1:
         run_manual_analyzer()
@@ -1191,8 +1371,10 @@ def main() -> None:
         run_margin_analysis()
     elif choice == 7:
         run_supplier_analysis()
-    else:
+    elif choice == 8:
         run_logistics_analysis()
+    else:
+        run_risk_analysis()
 
 
 if __name__ == "__main__":

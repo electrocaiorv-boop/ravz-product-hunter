@@ -20,6 +20,7 @@ from src.main import (
     format_logistics_report,
     format_margin_report,
     format_report,
+    format_risk_report,
     format_search_results,
     format_supplier_report,
     format_trend_report,
@@ -27,6 +28,7 @@ from src.main import (
     parse_non_empty_text,
     parse_optional_bool,
     parse_optional_int,
+    parse_optional_level_0_100,
     parse_optional_money,
     parse_optional_moq,
     parse_optional_positive_money,
@@ -41,12 +43,15 @@ from src.main import (
     run_logistics_analysis,
     run_margin_analysis,
     run_mercado_livre_search,
+    run_risk_analysis,
     run_supplier_analysis,
     run_trend_analysis,
 )
 from src.margin_analysis import analyze_margin
 from src.margin_models import MarginInputs
 from src.models import ComponentScores, Product
+from src.risk_analysis import analyze_risk
+from src.risk_models import RiskInputs
 from src.scoring import score_opportunity
 from src.supplier_analysis import analyze_supplier
 from src.supplier_models import SupplierInputs
@@ -163,9 +168,10 @@ def test_parse_menu_choice_accepts_valid_options():
     assert parse_menu_choice("2") == 2
     assert parse_menu_choice(" 7 ") == 7
     assert parse_menu_choice("8") == 8
+    assert parse_menu_choice("9") == 9
 
 
-@pytest.mark.parametrize("raw", ["0", "9", "abc", ""])
+@pytest.mark.parametrize("raw", ["0", "10", "abc", ""])
 def test_parse_menu_choice_rejects_invalid_options(raw):
     with pytest.raises(ValueError):
         parse_menu_choice(raw)
@@ -766,3 +772,64 @@ def test_run_logistics_analysis_reprompts_on_invalid_input_then_succeeds(capsys)
     assert "Invalid input" in captured.out
     assert "LOGISTICS ANALYSIS REPORT" in captured.out
     assert "Mirror" in captured.out
+
+
+def _make_risk_inputs(**overrides):
+    base = dict(product_name="Widget", supplier_count=5)
+    base.update(overrides)
+    return RiskInputs(**base)
+
+
+def test_format_risk_report_contains_key_sections():
+    inputs = _make_risk_inputs()
+    result = analyze_risk(inputs)
+    report = format_risk_report(inputs, result)
+
+    assert "Widget" in report
+    assert "RISK ANALYSIS REPORT" in report
+    assert "PROVISIONAL" in report
+    assert "0 = low apparent risk, 100 = high apparent risk" in report
+    assert "Risk Evidence Completeness" in report
+    assert "Risk Status:" in report
+    assert "Dependency risk:" in report
+    assert "Supply continuity risk:" in report
+    assert "Volatility risk:" in report
+    assert "Operational history risk:" in report
+    assert "Compliance/IP uncertainty risk:" in report
+    assert "Blockers:" in report
+    assert "never legal/infringement conclusions" in report
+    assert "NOT fed into the Phase 1 Opportunity Scoring Engine" in report
+
+
+def test_run_risk_analysis_happy_path(capsys):
+    fake_input = make_input(
+        [
+            "Diversified product", "5", "0.30", "0.40", "",
+            "0.05", "0.02", "0.03", "",
+            "",
+            "n", "n", "n", "y", "y",
+        ]
+    )
+    run_risk_analysis(fake_input)
+
+    captured = capsys.readouterr()
+    assert "RISK ANALYSIS REPORT" in captured.out
+    assert "Diversified product" in captured.out
+
+
+def test_run_risk_analysis_reprompts_on_invalid_input_then_succeeds(capsys):
+    fake_input = make_input(
+        [
+            "Concentrated product", "-1", "5",
+            "", "", "",
+            "", "", "", "",
+            "",
+            "", "", "", "", "",
+        ]
+    )
+    run_risk_analysis(fake_input)
+
+    captured = capsys.readouterr()
+    assert "Invalid input" in captured.out
+    assert "RISK ANALYSIS REPORT" in captured.out
+    assert "Concentrated product" in captured.out
