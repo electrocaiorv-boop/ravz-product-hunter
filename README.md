@@ -489,6 +489,124 @@ component in isolation.
   to the Demand Score.
 - Neither score has been validated against real sales outcomes.
 
+## Phase 6 scope
+
+Phase 6 adds a deterministic **Competition Analysis** layer. It answers
+*"how difficult does this market appear for a new seller?"* — the
+opposite question from Demand ("how popular does it appear?"). No AI
+agent; deterministic analytics over one marketplace sample.
+
+### Source evaluation (done before writing the scoring formula)
+
+Only `MercadoLivreItem` fields are usable: `price`, `seller_id`,
+`condition`, `free_shipping`, `title`, and the sample size itself.
+There is only **one** conceivable source family for competition in this
+project (no Google-Trends-equivalent second source exists for
+competition specifically) — a structurally different situation from
+Phase 5's two-family model. Mercado Livre is still `403` live, same
+blocker as every prior phase.
+
+### Data completeness vs. sample independence (Phase 5 lesson, re-applied)
+
+Five features (seller mix, price stats, shipping, condition, title
+duplication) are all computed from the **same ~10-item page** of one
+API call. Computing five things from one block of one street does not
+mean five independent surveys were taken — it means one block was
+looked at from five angles. Confidence is therefore bounded by *sample
+adequacy*, not by how many features were successfully extracted.
+
+### `marketplace_sample_size` vs. `total_result_count` (corrected)
+
+`len(items)` is a page-capped sample, never a total — `marketplace_sample_size`
+stays in `Observed` for transparency but never scores anything.
+`total_result_count` is **always `None`** right now. An earlier version
+of this phase inferred `total_result_count = marketplace_sample_size`
+whenever the sample came back smaller than the requested `limit`,
+reasoning "the API returned fewer than we asked for, so that must be
+everything." **That inference was removed** — it assumed a guarantee
+our abstraction doesn't make: `search_products()` returns *mapped*
+`MercadoLivreItem` objects, not the provider's raw result list or its
+paging metadata, so the mapped count isn't guaranteed to equal the
+provider's raw count; and even a short page doesn't by itself prove the
+search was exhaustive unless the provider says so explicitly. See
+"Hardening pass" below.
+
+### Formula (see `src/competition_analysis.py` module docstring for full detail)
+
+| Component | Base weight | From | Direction |
+|---|---|---|---|
+| Seller concentration | 0.30 | `100 * (1 - unique_seller_ratio)` | fewer distinct sellers in the SAMPLE → harder for a newcomer |
+| Listing saturation | 0.25 | **always excluded** | disabled — see "Hardening pass" below |
+| Price crowding | 0.20 | `100 * (1 - normalized price dispersion)` | tightly clustered prices → commoditized/crowded; widely dispersed → segmented market, not automatically "more competitive" |
+| Duplicate listings | 0.15 | exact-normalized-title duplicate ratio | weak proxy, deliberately low-weighted |
+| Shipping | 0.10 | free-shipping prevalence | weak proxy, deliberately the lowest weight |
+
+Every component above describes the **sample**, never the marketplace
+as a whole. Confidence: `min(0.6 * completeness + 0.4 * sample_adequacy, 55)`
+if the source succeeded at all, else `0`. The 55 cap mirrors Phase 5's
+~50-55 ceiling for "1 of 2 source families" — reinterpreted here as
+"this is our only witness, and that witness only saw one block." **This
+cap is a documented, provisional anchor, not an empirically validated
+figure.**
+
+### Hardening pass (pre-commit correction)
+
+Two modeling bugs were found and fixed before committing:
+
+1. **Listing saturation scored our own request parameter.** The
+   formula compared `marketplace_sample_size` to the requested `limit`
+   and scored a full page as "more saturated" — exactly the signal the
+   Phase 6 source evaluation itself said not to use
+   (`marketplace_sample_size` is capped by *our own* `limit`, not a
+   market-size signal). Fixed: `listing_saturation_contribution` is now
+   **always `None`**, permanently excluded from the Competition Score
+   (weight slot kept for future reinstatement, same treatment Phase 5
+   gave its own disabled marketplace component). Confirmed with a
+   regression test: samples of 5, 10, and 50 items with otherwise
+   identical features now produce the **exact same** Competition Score.
+2. **`total_result_count` inference wasn't actually valid.** Removed
+   entirely — see above. `total_result_count` stays `None`
+   unconditionally until a genuine provider total/paging field is
+   extracted and mapped (it currently is not).
+
+### What's new
+
+- `src/competition_models.py` — `CompetitionSignals`, `build_competition_signals()`
+- `src/competition_analysis.py` — `CompetitionAnalysisResult`, `analyze_competition()`
+- `src/main.py` — CLI option `5. Analyze Competition`
+- `tests/test_competition_models.py`, `tests/test_competition_analysis.py`
+
+### Run it
+
+```bash
+python -m src.main
+```
+Choose option `5` and enter a search term.
+
+### Important design rule
+
+The Competition Score is **not** fed into the Phase 1 Opportunity
+Scoring Engine yet (which already treats competition as a negative
+dimension on manually-entered data) — this phase only builds and
+validates Competition Analysis in isolation.
+
+### Limitations
+
+- Mercado Livre is currently unreachable live — expect `Competition
+  Score: not available`, `Confidence: 0.00` in this environment, not a
+  fabricated number.
+- A single marketplace sample (capped at 10 items by default) is never
+  a representative market survey — every score here describes "this
+  one page," not "the market."
+- `total_result_count` is always unknown right now — there is no safe
+  way to infer it from sample size alone in this abstraction (see
+  Hardening pass above).
+- Price-dispersion direction (low = crowded, high = segmented) is a
+  documented judgment call, not an empirically validated rule.
+- The 55 single-source confidence cap is a provisional anchor, not
+  empirically validated.
+- Neither score has been validated against real outcomes.
+
 ## Architecture direction
 
 The system is designed to grow into an orchestrator coordinating
@@ -570,8 +688,9 @@ root, so `src` resolves as a package whether you run `pytest` or
 
 14. Continuous improvement
 
-Phase 4 (trend data + deterministic trend analysis) and Phase 5
-(deterministic Demand Analysis, described above) are layered on top of
-steps 5-6 — real external integrations plus the deterministic groundwork
-for the eventual Trend Agent and Demand Agent's contributions to the
-Opportunity Scoring Engine. Phase 5 is the current phase.
+Phase 4 (trend data + deterministic trend analysis), Phase 5
+(deterministic Demand Analysis), and Phase 6 (deterministic Competition
+Analysis, described above) are layered on top of steps 5-7 — real
+external integrations plus the deterministic groundwork for the
+eventual Trend, Demand, and Competition Agents' contributions to the
+Opportunity Scoring Engine. Phase 6 is the current phase.

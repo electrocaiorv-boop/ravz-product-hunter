@@ -1,5 +1,7 @@
 import pytest
 
+from src.competition_analysis import analyze_competition
+from src.competition_models import CompetitionSignals
 from src.demand_analysis import analyze_demand
 from src.demand_models import DemandSignals
 from src.integrations.apify_trends import ApifyTrendsResponseError
@@ -9,6 +11,7 @@ from src.main import (
     ask_with_default,
     collect_product,
     collect_scores,
+    format_competition_report,
     format_demand_report,
     format_report,
     format_search_results,
@@ -17,6 +20,7 @@ from src.main import (
     parse_non_empty_text,
     parse_score,
     recommend,
+    run_competition_analysis,
     run_demand_analysis,
     run_mercado_livre_search,
     run_trend_analysis,
@@ -134,10 +138,10 @@ def test_recommend_handles_unknown_classification():
 def test_parse_menu_choice_accepts_valid_options():
     assert parse_menu_choice("1") == 1
     assert parse_menu_choice("2") == 2
-    assert parse_menu_choice(" 4 ") == 4
+    assert parse_menu_choice(" 5 ") == 5
 
 
-@pytest.mark.parametrize("raw", ["0", "5", "abc", ""])
+@pytest.mark.parametrize("raw", ["0", "6", "abc", ""])
 def test_parse_menu_choice_rejects_invalid_options(raw):
     with pytest.raises(ValueError):
         parse_menu_choice(raw)
@@ -367,3 +371,83 @@ def test_run_demand_analysis_handles_both_sources_failing_without_crashing(monke
     assert "trend source unavailable" in captured.out
     assert "marketplace source unavailable" in captured.out
     assert "DEMAND ANALYSIS REPORT" in captured.out
+
+
+def _make_competition_signals(**overrides):
+    base = dict(
+        query="bebedouro para gatos",
+        marketplace_sample_size=5,
+        total_result_count=None,
+        seller_count=3,
+        unique_seller_ratio=0.6,
+        price_min=10.0,
+        price_max=30.0,
+        price_mean=20.0,
+        price_median=20.0,
+        price_dispersion=0.2,
+        free_shipping_ratio=0.4,
+        condition_distribution={"new": 4, "used": 1},
+        duplicate_title_ratio=0.2,
+        source_coverage=1.0,
+        notes=[],
+    )
+    base.update(overrides)
+    return CompetitionSignals(**base)
+
+
+def test_format_competition_report_contains_key_sections():
+    signals = _make_competition_signals()
+    result = analyze_competition(signals)
+    report = format_competition_report(signals, result)
+
+    assert "bebedouro para gatos" in report
+    assert "Competition Score" in report
+    assert "PROVISIONAL" in report
+    assert "Confidence Score" in report
+    assert "Seller concentration:" in report
+    assert "Listing saturation:" in report
+    assert "Price crowding:" in report
+    assert "Duplicate listings:" in report
+    assert "Shipping:" in report
+    assert "Observed:" in report
+    assert "Derived:" in report
+    assert "Unavailable:" in report
+    assert "one street block" in report
+    assert "NOT fed into the Phase 1 Opportunity Scoring Engine" in report
+
+
+def test_run_competition_analysis_succeeds_with_marketplace_data(monkeypatch, capsys):
+    item = MercadoLivreItem(
+        item_id="MLB1",
+        title="Bebedouro",
+        price=50.0,
+        currency_id="BRL",
+        seller_id=1,
+        category_id="MLB1",
+        condition="new",
+        permalink=None,
+        free_shipping=True,
+        available_quantity=None,
+    )
+    monkeypatch.setattr("src.main.search_products", lambda query, limit=10: [item])
+
+    fake_input = make_input(["bebedouro para gatos"])
+    run_competition_analysis(fake_input)
+
+    captured = capsys.readouterr()
+    assert "COMPETITION ANALYSIS REPORT" in captured.out
+
+
+def test_run_competition_analysis_handles_source_failure_without_crashing(monkeypatch, capsys):
+    def fake_search_products(query, limit=10):
+        raise MercadoLivreResponseError(status_code=403, message="Forbidden")
+
+    monkeypatch.setattr("src.main.search_products", fake_search_products)
+
+    fake_input = make_input(["bebedouro para gatos"])
+    run_competition_analysis(fake_input)
+
+    captured = capsys.readouterr()
+    assert "marketplace source unavailable" in captured.out
+    assert "COMPETITION ANALYSIS REPORT" in captured.out
+    assert "not available" in captured.out

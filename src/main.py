@@ -1,21 +1,24 @@
 """RAVZ Product Hunter CLI.
 
 Phase 2: Manual Analyzer. Phase 3: Mercado Livre search. Phase 4: Trend
-analysis. Phase 5: Demand analysis.
+analysis. Phase 5: Demand analysis. Phase 6: Competition analysis.
 
 This module is the presentation layer: it collects input from the user,
 delegates all scoring logic to src.models / src.scoring, all Mercado
 Livre HTTP/JSON handling to src.integrations.mercadolivre, all Apify/trend
 HTTP/JSON handling to src.integrations.apify_trends, all trend-metric math
-to src.trend_analysis, and all demand math to src.demand_models /
-src.demand_analysis, then renders the result. It contains no scoring
-math and no HTTP logic of its own.
+to src.trend_analysis, all demand math to src.demand_models /
+src.demand_analysis, and all competition math to src.competition_models /
+src.competition_analysis, then renders the result. It contains no
+scoring math and no HTTP logic of its own.
 
 Input-collecting functions accept an injectable `input_func` so the
 retry/validation logic can be unit tested without calling the real
 built-in input().
 """
 
+from src.competition_analysis import analyze_competition
+from src.competition_models import build_competition_signals
 from src.demand_analysis import analyze_demand
 from src.demand_models import build_demand_signals
 from src.integrations.apify_trends import (
@@ -70,10 +73,10 @@ def parse_non_empty_text(raw: str) -> str:
 
 
 def parse_menu_choice(raw: str) -> int:
-    """Validate that raw text is one of the main menu options (1-4)."""
+    """Validate that raw text is one of the main menu options (1-5)."""
     text = raw.strip()
-    if text not in {"1", "2", "3", "4"}:
-        raise ValueError("choose 1, 2, 3 or 4")
+    if text not in {"1", "2", "3", "4", "5"}:
+        raise ValueError("choose 1, 2, 3, 4 or 5")
     return int(text)
 
 
@@ -423,14 +426,105 @@ def run_demand_analysis(input_func=input) -> None:
     print(format_demand_report(signals, result))
 
 
+COMPETITION_SAMPLE_LIMIT = 10
+
+
+def format_competition_report(signals, result) -> str:
+    """Render CompetitionSignals + CompetitionAnalysisResult as a human-readable report.
+
+    Both scores are always labeled PROVISIONAL. A sample from one
+    marketplace call is "one street block," never "the whole city" --
+    the report never implies otherwise.
+    """
+    lines = [
+        "=" * 50,
+        "COMPETITION ANALYSIS REPORT (PROVISIONAL)",
+        "=" * 50,
+        f"Query: {result.query}",
+        "",
+        f"Competition Score: {_format_optional(result.competition_score)} "
+        "(PROVISIONAL -- 0 = low apparent competition, 100 = very high; "
+        "not validated against real outcomes)",
+        f"Confidence Score: {result.confidence_score:.2f} "
+        "(how much evidence supports the Competition Score above)",
+        "",
+        "Contributions (None = excluded from Competition Score, not penalized):",
+        f"  Seller concentration: {_format_optional(result.seller_concentration_contribution)}",
+        f"  Listing saturation:   {_format_optional(result.listing_saturation_contribution)}",
+        f"  Price crowding:       {_format_optional(result.price_crowding_contribution)}",
+        f"  Duplicate listings:   {_format_optional(result.duplicate_listing_contribution)}",
+        f"  Shipping:             {_format_optional(result.shipping_contribution)}",
+    ]
+
+    lines.append("")
+    lines.append("Observed:")
+    for key, value in result.observed.items():
+        lines.append(f"  - {key}: {_format_optional(value)}")
+
+    lines.append("")
+    lines.append("Derived:")
+    for key, value in result.derived.items():
+        lines.append(f"  - {key}: {_format_optional(value)}")
+
+    lines.append("")
+    lines.append("Unavailable:")
+    for item in result.unavailable:
+        lines.append(f"  - {item}")
+
+    if result.notes:
+        lines.append("")
+        lines.append("Notes:")
+        for note in result.notes:
+            lines.append(f"  - {note}")
+
+    lines.append("")
+    lines.append(
+        "A marketplace sample is one street block, not the whole city -- "
+        "it is never treated as a total market count."
+    )
+    lines.append(
+        "This Competition Score is NOT fed into the Phase 1 Opportunity "
+        "Scoring Engine yet."
+    )
+    lines.append("=" * 50)
+    return "\n".join(lines)
+
+
+def run_competition_analysis(input_func=input) -> None:
+    """Run the Phase 6 competition-analysis flow end to end.
+
+    Attempts the marketplace source; if it fails, no Competition Score
+    is fabricated -- the failure is reported honestly and the report
+    still renders with everything marked unavailable.
+
+    Does NOT feed the resulting Competition Score into the Phase 1
+    Opportunity Scoring Engine.
+    """
+    print("\nAnalyze Competition")
+    query = ask("Search term: ", parse_non_empty_text, input_func)
+
+    marketplace_items = None
+    try:
+        marketplace_items = search_products(query, limit=COMPETITION_SAMPLE_LIMIT)
+    except MercadoLivreError as exc:
+        print(f"\n(marketplace source unavailable: {exc})")
+
+    signals = build_competition_signals(query, marketplace_items=marketplace_items)
+    result = analyze_competition(signals, requested_limit=COMPETITION_SAMPLE_LIMIT)
+
+    print()
+    print(format_competition_report(signals, result))
+
+
 def main() -> None:
     print("RAVZ Product Hunter")
     print("1. Manual Product Analyzer")
     print("2. Search Mercado Livre")
     print("3. Analyze Trend")
     print("4. Analyze Demand")
+    print("5. Analyze Competition")
 
-    choice = ask("Choose an option (1-4): ", parse_menu_choice)
+    choice = ask("Choose an option (1-5): ", parse_menu_choice)
 
     if choice == 1:
         run_manual_analyzer()
@@ -438,8 +532,10 @@ def main() -> None:
         run_mercado_livre_search()
     elif choice == 3:
         run_trend_analysis()
-    else:
+    elif choice == 4:
         run_demand_analysis()
+    else:
+        run_competition_analysis()
 
 
 if __name__ == "__main__":

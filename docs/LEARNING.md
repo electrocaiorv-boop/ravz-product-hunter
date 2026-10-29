@@ -1761,3 +1761,467 @@ pontuar zero. Demand Score 60.40, Confidence Score exatamente 50.00
   provedor confirmou que é zero" e "não sabemos o valor porque essa
   parte falhou ou foi omitida" -- tratar os dois como a mesma coisa é
   um erro de modelagem, não um detalhe menor.
+
+---
+
+## Fase 6 — Análise de Concorrência determinística (Competition Score provisório)
+
+### 1. Nome da fase
+
+**Fase 6: camada de Competition Analysis determinística, estimando o
+quão difícil o ambiente competitivo parece para um novo vendedor --
+ainda sem agente de IA, reaproveitando as lições de confiança da Fase
+5.**
+
+### 2. Explicação simples
+
+Imagine que você está pensando em abrir uma loja numa rua nova. Antes
+de decidir, você caminha por um **quarteirão** (uma única rua, um só
+lado, um pedaço pequeno da cidade) e observa: quantas lojas tem nesse
+quarteirão, se os preços são todos parecidos, se é sempre o mesmo dono
+aparecendo em várias lojas, se todas oferecem frete grátis, se os nomes
+das lojas se parecem muito entre si.
+
+Isso te dá pistas úteis! Mas seria um erro enorme concluir "esse
+quarteirão tem 10 lojas, então a cidade inteira tem só 10 lojas de
+concorrência." Você só viu **um quarteirão**, não a cidade inteira. Essa
+é exatamente a diferença entre uma **amostra** (`sample`) e o **mercado
+total** (`total market`) -- e é o cuidado central desta fase.
+
+Assim como na Fase 5 separamos "quão forte parece a demanda" de "quanta
+evidência temos", aqui separamos dois números parecidos:
+
+- **Competition Score**: "quão difícil esse mercado parece, pelo que
+  conseguimos observar?" (0 = parece fácil, 100 = parece muito
+  concorrido)
+- **Confidence Score**: "quanta certeza real temos nessa conclusão?"
+
+Um produto pode ter Competition Score 85 com Confidence 30 -- isso
+significa "pelo que vimos nesse quarteirão, parece bem concorrido, mas
+só vimos um quarteirão pequeno, então não tenha certeza absoluta disso."
+
+### 3. Explicação técnica
+
+Implementamos a primeira camada de **competition proxy** determinística
+do projeto, com a mesma separação arquitetural das Fases 4 e 5:
+
+- `src/competition_models.py` — modelo neutro `CompetitionSignals` e
+  `build_competition_signals()`, que recebe uma lista (possivelmente
+  vazia) de `MercadoLivreItem` já buscada pela Fase 3.
+- `src/competition_analysis.py` — `analyze_competition()`, sem nenhum
+  import de HTTP, Apify ou Mercado Livre: só recebe `CompetitionSignals`
+  e devolve `CompetitionAnalysisResult`.
+
+- **Market saturation / listing saturation**: o quanto o mercado parece
+  "cheio" de anúncios concorrentes. Medimos isso de um jeito honesto:
+  se a amostra devolvida for **menor** que o `limit` pedido, sabemos com
+  certeza (não é estimativa!) que aquele é o total real -- a API já
+  devolveu tudo que existia. Se a amostra **atingir** o `limit`, só
+  sabemos "existem pelo menos esse tanto", nunca o total.
+- **Sample bias / page-limited sample**: toda a análise desta fase vem
+  de uma única chamada de API, limitada a ~10 itens por padrão. Isso é
+  uma amostra, com todo o viés que uma amostra pequena carrega -- nunca
+  tratamos `marketplace_sample_size` como uma medida do mercado
+  completo.
+- **Seller concentration / Sample concentration**: contamos quantos
+  `seller_id` distintos aparecem na amostra. Se poucos vendedores
+  dominam a amostra, chamamos isso de **sample concentration**
+  ("concentração NA AMOSTRA"), nunca de **market share**
+  ("participação de mercado") -- não temos dados para afirmar isso, só
+  para descrever o que vimos nesses ~10 itens.
+- **Market share vs. sample share**: `market share` seria "que fração
+  de TODAS as vendas reais do mercado pertence a esse vendedor" --
+  informação que não temos e nunca fabricamos. O que calculamos é
+  `unique_seller_ratio`, uma fração da AMOSTRA, não do mercado.
+- **Price dispersion / Standard deviation / Coefficient of variation**:
+  calculamos `price_min`, `price_max`, `price_mean`, `price_median`, e
+  `price_dispersion` como o **coeficiente de variação**
+  (`desvio padrão / média`) -- preferido ao desvio padrão bruto porque
+  é comparável entre produtos de preços muito diferentes (R$10 vs
+  R$1000).
+- **Commoditization / Price crowding**: aqui tomamos uma decisão de
+  modelagem deliberada e documentada: dispersão de preço **baixa**
+  (preços muito parecidos entre vendedores) é tratada como
+  **price crowding** -- um sinal de que o produto está
+  **comoditizado** (todo mundo vendendo quase pela mesma coisa, difícil
+  se diferenciar). Dispersão **alta** é tratada como mercado
+  segmentado (variações de produto, não necessariamente "mais
+  concorrência"). Isso é o oposto do que alguém assumiria
+  ingenuamente ("preços muito diferentes = mercado caótico e
+  competitivo") -- por isso documentamos o raciocínio com cuidado.
+- **Confiança limitada por independência de amostra, não por
+  completude de features**: a lição central da Fase 5 era "múltiplas
+  features da MESMA fonte não são confirmações independentes".
+  Aqui ela aparece de um jeito um pouco diferente: como só existe UMA
+  família de fonte possível (Mercado Livre, sem um "Google Trends da
+  concorrência"), o risco não é "1 de 2 fontes" -- é "5 features, todas
+  calculadas da MESMA pequena amostra de ~10 itens". Por isso o teto de
+  confiança (`MAX_CONFIDENCE_SINGLE_SOURCE = 55`) não depende de quantas
+  das 5 features conseguimos calcular, mas também do **tamanho da
+  amostra** em si -- ter as 5 features de uma amostra de 2 itens não
+  deveria inspirar a mesma confiança que ter as 5 features de uma
+  amostra de 10.
+- **Deterministic analysis**: dado o mesmo `CompetitionSignals`,
+  `analyze_competition()` sempre devolve o mesmo resultado -- sem IA
+  generativa, sem embeddings, sem aleatoriedade. A duplicação de
+  títulos, por exemplo, é verificada por comparação EXATA de texto
+  normalizado (`strip().lower()` + espaços colapsados), não por
+  similaridade semântica de IA -- exatamente como pedido nesta fase
+  ("no embeddings, no LLM similarity yet").
+
+### 4. Conexão entre o simples e o técnico
+
+O "quarteirão" é a **amostra** (`marketplace_sample_size`); a "cidade
+inteira" é o **mercado total** (`total_result_count`), que quase nunca
+conseguimos conhecer de verdade -- só nos casos raros em que a amostra
+devolvida é menor que o limite pedido. "O mesmo dono aparecendo em
+várias lojas" é a **sample concentration** (`unique_seller_ratio`
+baixo), nunca uma afirmação de **market share**. "Todos os preços
+parecidos" é **price crowding** (baixa `price dispersion` /
+**coefficient of variation**), interpretado com cuidado como
+possível **comoditização**, não assumido automaticamente como "mais
+concorrência". E "só vi um quarteirão, não posso ter certeza sobre a
+cidade" é exatamente o **Confidence Score**, limitado por
+**independência de amostra** -- a mesma ideia central da Fase 5
+(**correlated evidence** não vale como **source independence**),
+aplicada aqui à escala de uma única chamada de API em vez de duas
+famílias de fonte.
+
+### 5. O que implementamos na prática
+
+- `src/competition_models.py`:
+  - `CompetitionSignals` — `query`, `marketplace_sample_size`,
+    `total_result_count`, `seller_count`, `unique_seller_ratio`,
+    `price_min/max/mean/median`, `price_dispersion`,
+    `free_shipping_ratio`, `condition_distribution`,
+    `duplicate_title_ratio`, `source_coverage`, `notes` -- com
+    validação de faixa em `__post_init__`, incluindo a regra
+    `total_result_count >= marketplace_sample_size`.
+  - `build_competition_signals()` — calcula cada campo só a partir dos
+    itens que realmente têm aquele dado (preço, vendedor, frete,
+    condição, título), documentando honestamente qualquer sinal
+    ausente em `notes`.
+- `src/competition_analysis.py`:
+  - `analyze_competition()` — calcula `seller_concentration`,
+    `listing_saturation`, `price_crowding`, `duplicate_listing`,
+    `shipping` (pesos 0.30/0.25/0.20/0.15/0.10), o Competition Score
+    (média ponderada só sobre componentes disponíveis) e o Confidence
+    Score (capado em 55 para a única fonte existente).
+- `src/main.py` — nova opção `5. Analyze Competition`, buscando até 10
+  itens no Mercado Livre e exibindo Observado/Derivado/Indisponível.
+- `tests/test_competition_models.py` e `tests/test_competition_analysis.py`
+  -- 33 testes determinísticos cobrindo amostra de alta/baixa
+  concorrência, vendedores concentrados/diversos, preços
+  agrupados/dispersos, sinais ausentes (preço/vendedor/frete),
+  duplicação de títulos, amostra vazia, falha de fonte, zero observado
+  vs. indisponível, confiança com uma única fonte, e amostra limitada
+  por página nunca tratada como total.
+- Validação real feita ao vivo: Mercado Livre respondeu `403` (mesmo
+  bloqueio de todas as fases anteriores) -- o relatório mostrou
+  corretamente `Competition Score: not available`, `Confidence Score:
+  0.00`, sem travar e sem inventar nada, exatamente como a avaliação de
+  fontes desta fase já previa antes de rodar.
+
+### 6. Termos técnicos aprendidos
+
+- **termo:** Competition proxy
+  **definição:** um sinal indireto usado para estimar o quão difícil é
+  competir em um mercado, sem medir diretamente "dificuldade".
+  **como apareceu no projeto:** concentração de vendedores, dispersão
+  de preço, prevalência de frete grátis, duplicação de títulos.
+
+- **termo:** Market saturation (saturação de mercado)
+  **definição:** o quão "cheio" um mercado parece estar de produtos/
+  anúncios concorrentes.
+  **como apareceu no projeto:** `listing_saturation_contribution`,
+  derivada do tamanho da amostra em relação ao limite pedido.
+
+- **termo:** Seller concentration (concentração de vendedores)
+  **definição:** o quão poucos vendedores distintos dominam um
+  conjunto de anúncios.
+  **como apareceu no projeto:** `100 * (1 - unique_seller_ratio)`.
+
+- **termo:** Sample concentration vs. Market share
+  **definição:** concentração observada DENTRO de uma amostra pequena
+  (`sample concentration`) é diferente de participação real no mercado
+  total (`market share`) -- a primeira é honesta de afirmar com uma
+  amostra pequena; a segunda não.
+  **como apareceu no projeto:** `unique_seller_ratio` é explicitamente
+  documentado como medida de amostra, nunca de mercado.
+
+- **termo:** Price dispersion (dispersão de preço)
+  **definição:** o quanto os preços de uma amostra variam entre si.
+  **como apareceu no projeto:** medida como coeficiente de variação
+  (`price_dispersion`).
+
+- **termo:** Standard deviation (desvio padrão)
+  **definição:** uma medida de quão espalhados estão os valores em
+  torno da média.
+  **como apareceu no projeto:** usado dentro do cálculo do coeficiente
+  de variação (`statistics.pstdev`).
+
+- **termo:** Median (mediana)
+  **definição:** o valor do meio de um conjunto ordenado -- menos
+  sensível a valores extremos do que a média.
+  **como apareceu no projeto:** `price_median`, calculado junto com a
+  média para dar uma visão mais robusta do preço típico.
+
+- **termo:** Coefficient of variation (coeficiente de variação)
+  **definição:** o desvio padrão dividido pela média -- uma medida de
+  dispersão relativa, comparável entre escalas de preço diferentes.
+  **como apareceu no projeto:** `price_dispersion = pstdev(prices) /
+  mean(prices)`, usado em vez do desvio padrão bruto por ser comparável
+  entre produtos de preços muito diferentes.
+
+- **termo:** Commoditization (comoditização)
+  **definição:** quando um produto se torna tão padronizado que
+  vendedores diferentes competem quase só por preço, sem diferenciação.
+  **como apareceu no projeto:** interpretação de baixa dispersão de
+  preço como possível sinal de comoditização (`price crowding`).
+
+- **termo:** Price crowding (aglomeração de preço)
+  **definição:** quando muitos vendedores oferecem o mesmo produto a
+  preços muito parecidos.
+  **como apareceu no projeto:** `price_crowding_contribution`, alta
+  quando a dispersão de preço é baixa.
+
+- **termo:** Sample bias (viés de amostra)
+  **definição:** a distorção que acontece quando se tira conclusões
+  gerais a partir de uma amostra pequena e não necessariamente
+  representativa.
+  **como apareceu no projeto:** o motivo central pelo qual o Confidence
+  Score desta fase tem um teto baixo (55) mesmo com dados completos.
+
+- **termo:** Page-limited sample (amostra limitada por página)
+  **definição:** uma amostra cujo tamanho é artificialmente limitado
+  pelo parâmetro de paginação de uma API, não pelo tamanho real dos
+  dados.
+  **como apareceu no projeto:** `marketplace_sample_size`, nunca igual
+  a `total_result_count` a menos que a amostra já tenha vindo menor que
+  o limite pedido.
+
+- **termo:** Source independence (independência de fonte)
+  **definição:** o grau em que diferentes sinais vêm de fontes
+  genuinamente separadas, sem compartilhar a mesma origem de dados --
+  conceito trazido da Fase 5.
+  **como apareceu no projeto:** usado para explicar por que 5 features
+  da mesma amostra não valem como 5 confirmações independentes.
+
+- **termo:** Correlated evidence (evidência correlacionada)
+  **definição:** múltiplos sinais que vêm, na raiz, da mesma
+  fonte/observação -- não contam como confirmações independentes entre
+  si.
+  **como apareceu no projeto:** todas as 5 dimensões de competição
+  vêm da mesma chamada de API, por isso não multiplicam a confiança.
+
+- **termo:** Confidence score
+  **definição:** um número que representa o quanto confiamos em uma
+  conclusão, separado da força da própria conclusão.
+  **como apareceu no projeto:** `CompetitionAnalysisResult.confidence_score`,
+  capado em 55 mesmo com dados completos, porque a amostra é única.
+
+- **termo:** Missing vs. observed zero
+  **definição:** a diferença entre "não sabemos o valor" (`None`) e "o
+  valor real observado é zero".
+  **como apareceu no projeto:** `free_shipping_ratio = 0.0` (todos os
+  itens têm frete grátis `False`, um zero real) é diferente de
+  `free_shipping_ratio = None` (nenhum item tinha esse campo
+  preenchido) -- testado explicitamente.
+
+- **termo:** Evidence quality (qualidade da evidência)
+  **definição:** o quão boa e completa é a evidência disponível,
+  independente de quantas fontes existem.
+  **como apareceu no projeto:** `internal_quality_score`, misturando
+  completude (quantos componentes temos) e adequação de amostra
+  (quão grande é a amostra que temos).
+
+- **termo:** Deterministic analysis (análise determinística)
+  **definição:** um cálculo cujo resultado depende apenas dos dados de
+  entrada -- sempre o mesmo para a mesma entrada, sem IA generativa.
+  **como apareceu no projeto:** `analyze_competition()` inteiro,
+  incluindo a duplicação de títulos por comparação exata de texto
+  normalizado, sem embeddings nem similaridade por IA.
+
+### 7. Comandos/ferramentas usados
+
+```bash
+python -m src.main          # executar a CLI (opção 5 = Analyze Competition)
+python -m pytest -v         # rodar todos os testes via módulo
+pytest -v                   # rodar todos os testes direto
+```
+
+Ferramentas: Python 3.12, `pytest`, `monkeypatch`, `statistics`
+(`pstdev`, `fmean`, `median`), `collections.Counter` (para contagem de
+vendedores/condições/títulos duplicados) -- nenhuma dependência nova.
+
+### 8. Como explicar isso para um recrutador ou cliente
+
+"Eu construí uma camada de análise de concorrência totalmente
+determinística, sem IA generativa e sem embeddings, que estima o quão
+difícil um mercado parece para um novo vendedor a partir de uma amostra
+de anúncios do Mercado Livre. O ponto mais importante de design é a
+honestidade sobre o que uma amostra pequena pode e não pode dizer: eu
+nunca trato o tamanho da amostra como o tamanho do mercado total, e o
+Confidence Score tem um teto deliberadamente baixo porque todas as
+features vêm da mesma chamada de API -- cinco ângulos do mesmo
+quarteirão, não cinco quarteirões diferentes. Quando a fonte de dados
+está fora do ar (como aconteceu na validação real desta fase, com o
+Mercado Livre retornando 403), o sistema não inventa um número -- ele
+reporta honestamente que não há evidência suficiente, com Confidence
+zero."
+
+### 9. O que devo lembrar desta fase
+
+- **Uma amostra nunca é o mercado total** -- essa é a lição mais
+  importante desta fase, e ela já apareceu, de forma diferente, na
+  Fase 5 (`marketplace_sample_size` vs. `total_result_count`). O mesmo
+  erro de modelagem pode aparecer em formas diferentes; vale a pena
+  revisitar lições antigas ao desenhar uma fase nova, em vez de
+  assumir que cada fase precisa redescobrir o problema do zero.
+- **Múltiplas features da mesma fonte não multiplicam confiança** --
+  mesmo quando a fonte é única (sem "1 de 2 famílias" para comparar), o
+  princípio se aplica através do tamanho da amostra: mais ângulos do
+  mesmo bloco não valem mais do que o próprio bloco.
+- **Interpretar sinais exige cuidado direcional**: dispersão de preço
+  baixa não é automaticamente "bom" ou "ruim" -- aqui foi interpretada
+  como comoditização (ruim para diferenciação), uma escolha documentada
+  explicitamente, não uma verdade universal.
+- **Nomear com honestidade importa**: `sample concentration` em vez de
+  `market share`; `marketplace_sample_size` em vez de
+  `marketplace_result_count` -- o nome de um campo é, ele mesmo, uma
+  afirmação sobre o que os dados significam.
+- **Falha de fonte não deve gerar número fabricado**: quando o Mercado
+  Livre retornou 403 na validação real, o sistema reportou
+  `Competition Score: not available` -- exatamente o comportamento que
+  a avaliação de fontes já tinha previsto antes de qualquer linha de
+  código ser escrita.
+
+### Adendo — Revisão de hardening antes do commit (2 bugs de modelagem)
+
+Antes de comitar a Fase 6, encontramos dois problemas reais de
+modelagem -- e, curiosamente, o próprio texto que escrevemos na
+avaliação de fontes desta fase (seção 1) já tinha previsto exatamente a
+regra que o código violou. Isso é uma lição por si só: escrever a regra
+não é o mesmo que aplicá-la em todo lugar do código.
+
+**1. `listing_saturation` pontuava o nosso próprio parâmetro de busca**
+
+A avaliação de fontes da Fase 6 já tinha dito, antes de qualquer linha
+de código: "`marketplace_sample_size` não deve ser usado como sinal
+direto de tamanho de mercado, porque é limitado pelo nosso próprio
+`limit` pedido." Mas o componente `listing_saturation_contribution`
+implementado fazia exatamente isso -- comparava `marketplace_sample_size`
+com o `limit` pedido e pontuava "página cheia = mercado mais saturado."
+
+Isso é o problema de **request limit não ser um sinal de mercado**: se
+eu peço "me traga até 10 lojas" e me trazem exatamente 10, isso não me
+diz quantas lojas existem na cidade -- só me diz "existem pelo menos
+10". O número "10" que eu vejo é, em parte, o número que EU escolhi
+pedir, não um fato sobre o mundo. Usar esse número para calcular
+"quão saturado está o mercado" é basicamente medir a minha própria
+pergunta e fingir que medi a resposta.
+
+A correção: `listing_saturation_contribution` agora é **sempre `None`**,
+excluído permanentemente do Competition Score (o espaço de peso
+continua reservado, documentado, para o dia em que tivermos um campo
+real de total do provedor). Testamos com regressão: amostras de 5, 10 e
+50 itens, com as mesmas features de concorrência, agora produzem
+**exatamente o mesmo** Competition Score -- prova de que o tamanho da
+amostra, isolado, não pode mais mover o número.
+
+**2. Inferir `total_result_count` a partir de `sample < limit` parecia
+válido, mas não era**
+
+A versão anterior desta fase assumia: "se a API devolveu menos itens do
+que eu pedi, então aquilo é tudo que existe." Isso parece
+matematicamente razoável -- e é exatamente por isso que é um exemplo
+perfeito de **uma inferência que parece matematicamente válida, mas é
+semanticamente inválida** (`why an inference can be mathematically
+valid-looking but semantically invalid`). A lógica "menos que o limite
+= é tudo" só funciona se duas garantias forem verdadeiras ao mesmo
+tempo:
+
+1. A contagem que eu vejo (`len(mapped_items)`) é EXATAMENTE a mesma
+   contagem que o provedor usou internamente para decidir quantos
+   resultados existem (**mapped item count vs. raw result count**) --
+   nosso `search_products()` devolve objetos `MercadoLivreItem` já
+   **mapeados**, não a lista bruta nem os metadados de paginação do
+   provedor. Hoje, por acaso, o código mapeia 1 para 1 -- mas nada
+   garante isso para sempre; é um detalhe de implementação, não um
+   contrato.
+2. O provedor realmente fez uma busca completa/exaustiva, e não
+   aplicou nenhum filtro, limite de qualidade, ou corte silencioso
+   antes de devolver a resposta.
+
+Chamamos isso de **abstraction information loss** (perda de informação
+na abstração): cada camada que transformamos os dados (resposta bruta
+→ JSON → objetos `MercadoLivreItem` mapeados) pode descartar
+informação que a camada anterior tinha -- nesse caso, os metadados de
+**paginação** (**pagination metadata**) que o Mercado Livre
+provavelmente devolve (um campo `paging.total`, por exemplo), mas que
+nosso `_map_item()` nunca extraiu nem preservou. Uma vez que a
+informação é descartada numa camada, nenhuma camada posterior pode
+recuperá-la por inferência -- só pode adivinhar.
+
+Essa é a diferença entre **provider metadata** (um fato que o próprio
+provedor afirma, como um campo `total` explícito na resposta) e
+**derived inference** (uma conclusão que NÓS calculamos a partir de
+outros números, mesmo que pareça razoável). Só o primeiro tipo é seguro
+de usar como "total"; o segundo, aqui, não era.
+
+A correção: `total_result_count` agora é **sempre `None`**, até que um
+campo real de total do provedor seja extraído e mapeado (o que ainda
+não acontece hoje).
+
+**A analogia que resume os dois problemas:**
+
+> Se eu pedir para alguém trazer **no máximo 10 lojas** de uma cidade, e
+> essa pessoa trouxer 10, eu só sei que existem **pelo menos 10**.
+>
+> Se ela trouxer 7, eu ainda **não posso** automaticamente afirmar que a
+> cidade inteira tem exatamente 7 lojas -- a menos que a fonte me diga
+> explicitamente que a busca foi exaustiva e completa.
+>
+> A nossa integração atual não preserva essa garantia.
+
+**Validação ao vivo após a correção:** rodamos a opção 5 de novo contra
+o Mercado Livre de verdade. Ele continua devolvendo `403` (mesmo
+bloqueio de todas as fases anteriores) -- o relatório mostrou
+corretamente `Competition Score: not available`, `Confidence Score:
+0.00`, sem travar e sem inventar nada.
+
+**Termos novos desta revisão:**
+
+- **Sample size is not market saturation**: o tamanho de uma amostra
+  (quantos itens vieram numa resposta) nunca deve ser confundido com o
+  quão "saturado" ou "cheio" está o mercado real.
+- **Request limit is not a market signal**: um parâmetro que NÓS
+  escolhemos ao fazer a chamada (`limit=10`) não é um fato sobre o
+  mundo -- é uma escolha nossa, e não deveria aparecer como se fosse
+  uma medição.
+- **Pagination metadata**: os campos que uma API usa para descrever
+  "quantos resultados existem no total" e "em que página estamos" --
+  diferentes dos próprios itens de dados.
+- **Provider metadata vs. derived inference**: um fato que o provedor
+  afirma diretamente (`total: 743` num campo da resposta) é mais
+  confiável do que uma conclusão que nós calculamos a partir de outros
+  números, mesmo que o cálculo pareça razoável.
+- **Abstraction information loss**: cada camada de transformação de
+  dados pode descartar informação que existia na camada anterior; essa
+  informação não pode ser recuperada depois por inferência.
+- **Mapped item count vs. raw result count**: a quantidade de objetos
+  que NÓS conseguimos mapear com sucesso não é necessariamente igual à
+  quantidade de resultados que o provedor realmente tinha.
+- **Sample-level evidence vs. population-level claim**: uma observação
+  feita sobre uma amostra pequena (`sample-level`) nunca deve ser
+  apresentada como uma afirmação sobre o grupo inteiro
+  (`population-level`) sem evidência extra que justifique isso.
+- **Sample ≠ population**: a amostra que observamos e a população real
+  (o mercado inteiro) são coisas diferentes -- confundi-las é o erro
+  central desta fase, em duas formas distintas (saturação de listagem e
+  inferência de total).
+- **Por que uma inferência pode parecer matematicamente válida mas ser
+  semanticamente inválida**: a aritmética "sample < limit → total =
+  sample" está correta SE as premissas forem verdadeiras -- o erro não
+  está na matemática, está em assumir premissas (mapeamento 1-para-1,
+  busca exaustiva) que o nosso sistema nunca verificou nem garantiu.

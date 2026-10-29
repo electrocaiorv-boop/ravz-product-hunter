@@ -110,6 +110,74 @@ correctly reported as "not available" rather than scoring `0`. Demand
 Score 60.40, Confidence Score 50.00 (exactly at the 1-of-2-families
 cap) — verified by hand against the formula.
 
+### Competition Analysis inputs (Phase 6)
+
+> **Corrected after a pre-commit modeling review:** two checklist items
+> below were rewritten because the original expectations described the
+> bugs being fixed, not correct behavior. `listing_saturation` must
+> NEVER be scored from sample size vs. requested limit (it is now
+> permanently disabled), and `total_result_count` must NEVER be
+> inferred from `sample_size < limit` (it is now always `None`). See
+> the incident record below.
+
+- [ ] Mercado Livre competition-relevant fields checked (`price`,
+      `seller_id`, `condition`, `free_shipping`, `title`) — any renamed,
+      removed, or newly added?
+- [ ] Pagination semantics re-checked: does the live response now
+      include a genuine total/paging field we could extract and map,
+      distinct from the mapped-item count? (If yes, this is the ONLY
+      legitimate way to populate `total_result_count` or re-enable
+      `listing_saturation` — see incident below.)
+- [ ] `total_result_count` re-confirmed as always `None` unless a
+      genuine provider total/paging field has been mapped — re-check
+      that no code path re-introduces a sample-size-based inference
+- [ ] `listing_saturation_contribution` re-confirmed as always `None`
+      — re-check that no code path re-introduces sample-size-based
+      scoring of the Competition Score itself
+- [ ] `seller_id` availability checked — still present on items when
+      the search succeeds?
+- [ ] Price-field quality checked — still numeric, still present on
+      most items when the search succeeds?
+- [ ] Shipping-field quality checked — still a plain boolean?
+- [ ] Schema drift checked generally (any new/renamed fields on the
+      raw Mercado Livre item that `_map_item()` in
+      `src/integrations/mercadolivre.py` should pick up)
+- [ ] Confidence logic reviewed: `MAX_CONFIDENCE_SINGLE_SOURCE` (55) and
+      the completeness/sample-adequacy blend still match the "one
+      street block" reasoning in `src/competition_analysis.py` —
+      re-state that this cap is provisional, not empirically validated
+- [ ] Sample-bias risk re-stated: a ~10-item page is never treated as
+      a market survey anywhere in the code or the CLI report
+- [ ] Live smoke test run via CLI option `5` (any search term) —
+      confirm a clean "unavailable" report (not a crash, not a
+      fabricated score) if Mercado Livre is still blocked, or a sane
+      real report if it has recovered
+- [ ] 403/auth status re-confirmed (same check as the Mercado Livre
+      section above — Competition Analysis depends on the exact same
+      blocked endpoint)
+
+#### Incident (pre-commit, Phase 6) — two modeling bugs found and fixed
+
+1. `listing_saturation_contribution` scored `marketplace_sample_size`
+   against the requested `limit` — directly scoring our own query
+   parameter, which the Phase 6 source evaluation itself had already
+   flagged as invalid. Fixed: permanently `None`, excluded from the
+   Competition Score (weight slot kept for future reinstatement).
+2. `total_result_count` was inferred as `marketplace_sample_size`
+   whenever the sample came back smaller than the requested `limit`.
+   This assumed a guarantee the integration doesn't make:
+   `search_products()` returns *mapped* items, not the provider's raw
+   result count or paging metadata, so the mapped count isn't
+   guaranteed to equal the provider's true count — and a short page
+   doesn't by itself prove the search was exhaustive. Fixed: always
+   `None` until a genuine provider total/paging field is mapped.
+
+Regression tests added: identical competition features at sample sizes
+5/10/50 now produce the exact same Competition Score; varying
+`requested_limit` alone (5/10/50) with identical signals also produces
+the same score; an empty sample with nothing else known now correctly
+yields `None` (no defensible components), not a fabricated `0`.
+
 ### Shared
 
 - [ ] `pytest` dependency checked
