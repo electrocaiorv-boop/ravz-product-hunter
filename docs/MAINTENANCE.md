@@ -41,6 +41,75 @@ that belongs to a later phase (see `CLAUDE.md` roadmap).
       least twice back-to-back to catch intermittent per-section failures
 - [ ] `requests`, `python-dotenv` dependency versions checked
 
+### Demand Analysis inputs (Phase 5)
+
+> **Corrected after a modeling review (see incident below):** two
+> checklist items below were rewritten because the original
+> expectations described the bug being fixed, not the correct
+> behavior. Specifically: an empty `related_queries`/
+> `interest_by_region` section must produce an EXCLUDED
+> (`None`) component, never a `0` contribution; and
+> `marketplace_result_count` was renamed to `marketplace_sample_size`
+> because it is a page-capped count, not a total result count.
+
+- [ ] Both demand input sources checked for availability (trend via
+      Apify; marketplace via Mercado Livre) — note which succeeded
+- [ ] `DemandSignals` schema still matches what `build_demand_signals()`
+      actually populates (no silent field drift between the two)
+- [ ] `TrendData.interest_over_time_available` /
+      `related_queries_available` / `regional_interest_available`
+      still reflect reality: re-confirm the Actor gives us no explicit
+      per-section success/failure flag, so "non-empty list = available"
+      remains the best available heuristic (see docs/LEARNING.md Fase 5
+      hardening addendum for why this is a deliberately conservative
+      choice, not a guess)
+- [ ] `marketplace_sample_size` still honestly labeled as a page-capped
+      count, not a total result count — re-check if Mercado Livre
+      search ever becomes reachable again: does its response expose a
+      genuine total/paging field we could extract instead?
+- [ ] Scoring constants in `src/demand_analysis.py` reviewed (still
+      provisional — recalibrate only against real outcome data, not
+      vibes)
+- [ ] Confidence logic reviewed: `source_coverage` still reflects the
+      true number of reachable source families (currently 1 of 2), and
+      the `coverage_cap = 100 * source_coverage` hard cap is still being
+      applied (not silently reverted to an additive/uncapped formula)
+- [ ] Live smoke test run via CLI option `4` (`bebedouro para gatos`,
+      geo `BR`) — confirm Demand Score/Confidence Score are both
+      produced (or honestly `None`/low) without crashing
+- [ ] Data sparsity checked: does a low-observation-count run correctly
+      yield a low Confidence Score, not a misleadingly high one?
+- [ ] Source inconsistency checked: does a run with `interest_over_time`
+      populated but `related_queries`/`interest_by_region` empty still
+      produce a sane report (that component EXCLUDED/"not available",
+      never a fabricated `0` or a crash)?
+
+#### Incident (2026-10-29) — modeling bugs found and fixed before first commit
+
+A pre-commit review of the Phase 5 design found three real modeling
+bugs, all fixed in the same pass (no live schema change involved):
+
+1. An empty `related_queries`/`interest_by_region` section was scored
+   as a literal `0`, even though Phase 4 already proved the Actor can
+   return one section empty while others succeed on the same call.
+   Fixed by adding section-availability flags to `TrendData`.
+2. Confidence Score reached 67.5 with only ONE source family
+   available (a live run) — read as much stronger evidence than it
+   was, because completeness/volume from a single source were summed
+   additively with no real ceiling tied to source independence. Fixed
+   with a hard `coverage_cap = 100 * source_coverage`.
+3. `marketplace_result_count` was `len(search_products(...))`, which is
+   capped by the `limit` parameter (default 10) — a page size, not a
+   total marketplace result count. Renamed to `marketplace_sample_size`
+   and permanently excluded from Demand Score scoring.
+
+Live re-validation after the fix (`bebedouro para gatos`, `BR`):
+`related_queries` came back empty again (further confirming the Actor's
+inconsistency is ongoing, not resolved), but this time Breadth was
+correctly reported as "not available" rather than scoring `0`. Demand
+Score 60.40, Confidence Score 50.00 (exactly at the 1-of-2-families
+cap) — verified by hand against the formula.
+
 ### Shared
 
 - [ ] `pytest` dependency checked
@@ -159,6 +228,14 @@ official documentation. This section reflects the corrected findings.
   fails to parse into any numeric value now raises
   `ApifyTrendsDataError` instead of silently reporting zero
   observations.
+- **Further corroboration (Phase 5, same day):** during Phase 5 live
+  validation, one call returned an explicit Actor error row
+  (`errorMessage: "No data returned"`, raised as
+  `ApifyTrendsActorError`) for the exact same query that had succeeded
+  moments earlier with full data. Handled correctly (no crash, clean
+  message) by both the integration layer and `run_demand_analysis()`.
+  This is additional evidence for "internally inconsistent across
+  calls," not a new failure mode — no code change was needed here.
 
 ## How to perform the check
 

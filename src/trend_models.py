@@ -57,6 +57,34 @@ class TrendData:
     "apify:themineworks/google-trends-pro") so downstream consumers and
     reports can be transparent about provenance without needing to
     import the integration layer itself.
+
+    == Observed zero vs. unavailable/unreliable (added after the
+    Phase 4/5 incidents) ==
+
+    The Apify Actor has been observed returning one section correctly
+    populated while another is empty, on calls for the exact same
+    query -- see docs/MAINTENANCE.md. An empty `related_top_queries` /
+    `related_rising_queries` / `interest_by_region` therefore does NOT
+    reliably mean "the provider confirmed zero" -- it may equally mean
+    "this section silently failed or was omitted."
+
+    The three `*_available` flags below are how the integration layer
+    (which has access to the raw provider response) tells every
+    downstream consumer which is which, WITHOUT those consumers needing
+    to know anything about Apify or the Actor's raw JSON:
+
+        True  -> this section's list is non-empty; trust its contents,
+                 including a literal zero WITHIN that list (e.g. a
+                 region present with value=0 is a genuine observation).
+        False -> this section's list is empty; treat it as missing
+                 evidence (None), NOT as a confirmed zero. Exclude it
+                 from any score rather than scoring it as zero.
+
+    `interest_over_time_available` follows the same rule, but in
+    practice Google Trends has been observed to always return a full
+    time series (often with many zero-valued points for very low
+    demand -- that IS real signal) -- a genuinely EMPTY points list is
+    itself the suspicious/unreliable case here, not a low-interest one.
     """
 
     query: str
@@ -68,3 +96,6 @@ class TrendData:
     related_top_queries: list[RelatedQuery]
     related_rising_queries: list[RelatedQuery]
     source: str
+    interest_over_time_available: bool = True
+    related_queries_available: bool = True
+    regional_interest_available: bool = True

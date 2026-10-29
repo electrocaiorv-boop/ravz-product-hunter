@@ -193,6 +193,12 @@ def _map_report_row(raw: dict, query: str, geo: str, timeframe: str) -> TrendDat
 
     retrieved_at = raw.get("scraped_at") or datetime.now(timezone.utc).isoformat()
 
+    # Section-availability flags: an empty list is NOT trusted as a
+    # confirmed zero, because the Actor has been observed returning one
+    # section empty while others succeed on the same call (see
+    # docs/MAINTENANCE.md). Only a non-empty section is marked
+    # available; downstream consumers (src/demand_models.py) must treat
+    # an unavailable section as missing evidence, never as zero.
     return TrendData(
         query=raw.get("keyword", query),
         geo=raw.get("geo", geo),
@@ -203,6 +209,9 @@ def _map_report_row(raw: dict, query: str, geo: str, timeframe: str) -> TrendDat
         related_top_queries=related_top,
         related_rising_queries=related_rising,
         source=SOURCE_NAME,
+        interest_over_time_available=len(interest_over_time) > 0,
+        related_queries_available=len(related_top) > 0 or len(related_rising) > 0,
+        regional_interest_available=len(interest_by_region) > 0,
     )
 
 

@@ -348,6 +348,147 @@ Both are genuine live Apify runs — nothing here is fabricated or mocked.
   may display mangled in some terminals due to codepage, not data
   corruption — the underlying string is correct UTF-8.
 
+## Phase 5 scope
+
+Phase 5 adds a deterministic **Demand Analysis** layer that turns the
+signals already available from Phases 3-4 into an explainable,
+**provisional** Demand Score — without building an AI agent yet. This
+is deterministic analytics over structured data, not an LLM.
+
+### Source evaluation (done before writing the scoring formula)
+
+Checked live, not assumed:
+
+- **Trend/search-interest (Apify, Phase 4):** working. Provides trend
+  score, direction, average/recent interest, related-query counts,
+  regional spread.
+- **Marketplace (Mercado Livre, Phase 3):** still `403 Forbidden` live,
+  same blocker documented since Phase 3 — unavailable right now.
+- **Never available from any current source, by design:** sales
+  volume, number of buyers, revenue, conversion rate, absolute search
+  volume. These are never estimated or fabricated — they simply don't
+  exist as fields.
+
+Because only one source family is currently reachable, this phase's
+Confidence Score is structurally capped until marketplace data returns
+— that cap is the point, not a bug.
+
+### Hardening pass (post-implementation correction)
+
+Two modeling bugs were found and fixed after the first live validation:
+
+1. **Empty section ≠ confirmed zero.** The Apify Actor can return
+   `related_queries`/`interest_by_region` empty on a call where other
+   sections succeed (same Phase 4 inconsistency, observed again here).
+   The original code scored an empty section as a literal `0`,
+   artificially dragging the Demand Score down. Fixed by adding
+   `interest_over_time_available` / `related_queries_available` /
+   `regional_interest_available` flags to `TrendData` (set by the
+   integration layer, which is the only place with enough context to
+   judge this) — `demand_models.py` now reports an unavailable section
+   as `None` (excluded, weights renormalized), never `0`.
+2. **Confidence was too high for one source family.** A real run with
+   only the trend source available produced Confidence 67.5 — looking
+   like solid multi-source corroboration when it was one witness's
+   testimony, however complete. Fixed with a hard cap: `min(internal
+   quality, 100 * source_coverage)`. See "Demand Score vs. Confidence
+   Score" below for the formula and the completeness-vs-independence
+   distinction behind it.
+3. **`marketplace_result_count` was actually a page size.** `len(search_products(...))`
+   is capped by the `limit` parameter — it is not a total marketplace
+   result count, and scoring it would score our own query parameter,
+   not demand. Renamed to `marketplace_sample_size` and permanently
+   excluded from the Demand Score until a genuine total-result-count
+   field is extracted from Mercado Livre.
+
+### Demand Score vs. Confidence Score
+
+These answer two different questions and are always reported
+separately:
+
+- **Demand Score** — "how strong does demand appear, based on the
+  evidence we have?"
+- **Confidence Score** — "how much evidence do we actually have?"
+
+A Demand Score of 80 backed by one thin source (Confidence 35) is not
+the same situation as a Demand Score of 80 backed by multiple
+well-populated sources (Confidence 90).
+
+**Data completeness is not source independence.** `interest_over_time`,
+`related_queries`, and `interest_by_region` are all derived from the
+same Apify/Google Trends call — having all three populated is good
+*completeness* (one witness's testimony heard in full), not three
+independent witnesses. Only a genuinely different source family (e.g.
+Mercado Livre) is a second witness. Confidence must be bounded by the
+number of independent families, not inflated by how much detail one
+family provided.
+
+### Formula (see `src/demand_analysis.py` module docstring for full detail)
+
+Four components, each 0-100, blended by weighted average **over
+whichever are actually available** (missing/unreliable sections are
+excluded and weights renormalized — never defaulted to a neutral guess,
+never scored as zero just because a section came back empty):
+
+| Component | Base weight | From |
+|---|---|---|
+| Trend | 0.40 | recent search interest + trend direction |
+| Breadth | 0.25 | related + rising query counts (rising weighted at half — a weaker proxy alone); excluded (not zero) if the provider's related-query section was unreliable |
+| Regional | 0.20 | number of BR regions showing interest; excluded (not zero) if the provider's regional section was unreliable |
+| Marketplace | 0.15 | **permanently excluded** — `marketplace_sample_size` is a page-capped item count, not a total result count; see Hardening pass above |
+
+**Confidence** is a two-stage model, not a flat weighted sum:
+
+```
+internal_quality_score = 0.6 * completeness_score + 0.4 * volume_score
+coverage_cap            = 100 * source_coverage
+confidence_score        = min(internal_quality_score, coverage_cap)
+```
+
+With only 1 of 2 source families available, `coverage_cap = 50` —
+confidence can never exceed 50 no matter how complete or voluminous
+that one source's data is. With 2 of 2, the cap is 100 and
+`internal_quality_score` alone determines the result.
+
+### What's new
+
+- `src/demand_models.py` — `DemandSignals`, `build_demand_signals()`
+- `src/demand_analysis.py` — `DemandAnalysisResult`, `analyze_demand()`
+- `src/main.py` — CLI option `4. Analyze Demand`
+- `tests/test_demand_models.py`, `tests/test_demand_analysis.py`
+
+### Run it
+
+```bash
+python -m src.main
+```
+Choose option `4`, enter a search term, and optionally override `geo`
+(default `BR`).
+
+### Important design rule
+
+The Demand Score is **not** fed into the Phase 1 Opportunity Scoring
+Engine yet — this phase only builds and validates the Demand Analysis
+component in isolation.
+
+### Limitations
+
+- Confidence is structurally capped at 50 right now because only one
+  of two source families is reachable — not a defect, an honest
+  reflection of current coverage (see Hardening pass above).
+- The Apify Actor's known per-section inconsistency (Phase 4) means
+  even a successful trend fetch can return an empty related-query or
+  regional section on a given call. This is now correctly treated as
+  **unavailable** (excluded, not scored), never as a confirmed zero —
+  a live run during the hardening pass hit exactly this case
+  (`related_queries` empty, `interest_over_time`/`interest_by_region`
+  populated) and the report correctly showed "Breadth: not available"
+  rather than a misleadingly low number.
+- `marketplace_sample_size` is for display/evidence only — it is a
+  page-capped count, not a total result count, and never contributes
+  to the Demand Score.
+- Neither score has been validated against real sales outcomes.
+
 ## Architecture direction
 
 The system is designed to grow into an orchestrator coordinating
@@ -427,8 +568,10 @@ root, so `src` resolves as a package whether you run `pytest` or
 12. n8n automation
 13. Notifications
 
-Phase 4 (trend data + deterministic trend analysis, described above) is
-layered on top of step 5 — a second real external integration, plus the
-groundwork for the Trend Agent's eventual contribution to the Opportunity
-Scoring Engine. It is the current phase.
 14. Continuous improvement
+
+Phase 4 (trend data + deterministic trend analysis) and Phase 5
+(deterministic Demand Analysis, described above) are layered on top of
+steps 5-6 — real external integrations plus the deterministic groundwork
+for the eventual Trend Agent and Demand Agent's contributions to the
+Opportunity Scoring Engine. Phase 5 is the current phase.

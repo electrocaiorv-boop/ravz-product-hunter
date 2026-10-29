@@ -1350,3 +1350,414 @@ camada de integração continua isolada (`trend_analysis.py` não mudou
 nada), o que confirma, na prática, por que separar a fonte de dados da
 lógica de análise valeu a pena: a correção ficou inteiramente contida
 em um único arquivo.
+
+---
+
+## Fase 5 — Análise de Demanda determinística (Demand Score provisório)
+
+### 1. Nome da fase
+
+**Fase 5: camada de Demand Analysis determinística, transformando
+sinais reais de mercado em um Demand Score explicável e provisório --
+ainda sem agente de IA.**
+
+### 2. Explicação simples
+
+Imagine um **detetive** investigando se um produto está realmente em
+alta demanda. O detetive não tem uma câmera que filma todo mundo
+comprando o produto (isso seria "saber a demanda exata") -- ele só tem
+**pistas**: "o número de buscas por esse termo está subindo", "tem
+gente buscando termos parecidos", "o interesse aparece em várias
+regiões do Brasil, não só numa cidade".
+
+Uma pista sozinha é fraca. Se só uma pista aponta numa direção, o
+detetive fica com uma suspeita, não uma certeza. Mas se **várias pistas
+independentes** apontam para o mesmo lugar -- buscas subindo, muitas
+buscas parecidas, interesse espalhado pelo país -- a conclusão fica bem
+mais forte.
+
+Por isso, nesta fase, criamos **dois números**, não um só:
+
+- O **Demand Score**: "qual é a conclusão do detetive?" (quão forte
+  parece a demanda, de 0 a 100).
+- O **Confidence Score**: "quantas pistas de verdade o detetive tinha
+  na mão para chegar a essa conclusão?" (de 0 a 100).
+
+Um produto pode ter Demand Score 80 com Confidence 35 (uma pista forte,
+mas só uma) -- isso é bem diferente de Demand Score 80 com Confidence 90
+(várias pistas fortes e independentes apontando pro mesmo lugar). Tratar
+os dois casos como "a mesma coisa" seria enganoso -- e é exatamente por
+isso que nunca misturamos esses dois números em um só.
+
+Hoje, só temos uma "fonte de pistas" funcionando de verdade (o Google
+Trends, via Apify) -- a outra fonte possível (Mercado Livre) está
+bloqueada, como já vimos na Fase 3. Isso significa que, por mais forte
+que o sinal do Google Trends pareça, o Confidence Score nunca pode ser
+muito alto agora -- faltam pistas independentes para confirmar. Isso
+não é um defeito do nosso código: é a verdade honesta sobre quanta
+evidência realmente temos.
+
+### 3. Explicação técnica
+
+Implementamos a primeira camada de **demand proxy** determinística do
+projeto, separada em duas responsabilidades:
+
+- `src/demand_models.py` — modelo neutro `DemandSignals` (as
+  **features** derivadas, já numéricas) e `build_demand_signals()`
+  (monta o modelo a partir de `TrendData`/`TrendMetrics` já mapeados da
+  Fase 4, e de uma lista opcional de `MercadoLivreItem` da Fase 3).
+- `src/demand_analysis.py` — `analyze_demand()`, que não importa nada
+  de HTTP, Apify ou Mercado Livre: só recebe `DemandSignals` e devolve
+  `DemandAnalysisResult`.
+
+Cada campo de `DemandSignals` é um **feature** (um dado derivado,
+pronto para ser usado em cálculo), nunca o dado cru da API. Um sinal
+indisponível fica como `None` -- nunca um valor inventado.
+
+- **Proxy / Demand proxy**: como não existe um jeito direto de medir
+  "demanda real", usamos **proxies** -- sinais indiretos que, juntos,
+  sugerem demanda. `recent_search_interest` é um proxy forte (reflete
+  atenção de busca agora); `rising_query_count` isolado é um proxy
+  fraco (pode ser uma pequena base que "explodiu" sem significar muito).
+- **Signal / Feature**: cada número derivado que alimenta a análise
+  (`trend_score`, `related_query_count`, `regional_spread`...) é um
+  **signal** (sinal de mercado) transformado em **feature** (um valor
+  numérico pronto para cálculo).
+- **Derived metric**: `trend_contribution`, `breadth_contribution`,
+  `regional_contribution` e `marketplace_contribution` não vêm direto
+  de nenhuma API -- são **métricas derivadas**, calculadas a partir dos
+  sinais brutos por fórmulas documentadas.
+- **Evidence coverage / Source quality**: `source_coverage` mede
+  quantas das duas famílias de fonte possíveis (tendência,
+  marketplace) realmente contribuíram dados nesta consulta --
+  `confidence_score` usa isso como metade do seu peso, porque a
+  **qualidade da evidência** importa tanto quanto o número final.
+- **Confidence score**: um número GERAL, separado do Demand Score, que
+  mistura `source_coverage` (50%), quantos dos 4 grupos de componente
+  estão presentes (30%) e o volume de observações de tendência (20%).
+  Sempre calculável, mesmo que seja zero.
+- **Deterministic scoring**: dado o mesmo `DemandSignals`, `analyze_demand()`
+  sempre devolve o mesmo resultado -- sem IA generativa, sem
+  aleatoriedade.
+- **Missing data / Uncertainty**: um componente ausente (`None`) é
+  **excluído** da média ponderada do Demand Score (os pesos são
+  renormalizados sobre o que sobrou) -- nunca tratado como zero, porque
+  "não sabemos" é diferente de "sabemos que é fraco". Isso é
+  justamente o que torna a **incerteza** visível em vez de escondida
+  dentro de um número só.
+- **Provisional scoring model / Calibration**: assim como o Trend Score
+  da Fase 4, o Demand Score e o Confidence Score são rotulados
+  **PROVISIONAL** -- os pesos/escalas são constantes de módulo, feitas
+  para serem recalibradas depois de validar contra dados reais de
+  vendas.
+
+### 4. Conexão entre o simples e o técnico
+
+O "detetive com várias pistas" é, tecnicamente, um sistema de **demand
+proxies**: cada pista (busca subindo, buscas parecidas, interesse
+regional) é um **signal**, transformado em **feature** numérica. "Uma
+pista sozinha é fraca" é o motivo pelo qual nenhum componente pode
+dominar o Demand Score (pesos máximos de 40%/25%/20%/15%, e o
+`rising_query_count` -- a pista mais fraca -- entra com meio peso dentro
+do seu próprio componente). "Quantas pistas o detetive tinha na mão" é
+exatamente o **Confidence Score**: calculado a partir de
+**evidence coverage** (`source_coverage`) e completude dos dados, nunca
+a partir da força da conclusão em si. E "um produto pode ter Demand
+Score 80 e Confidence 35" é a separação entre **conclusão** (Demand
+Score) e **evidência** (Confidence Score) que esta fase exige.
+
+### 5. O que implementamos na prática
+
+- `src/demand_models.py`:
+  - `DemandSignals` — `query`, `geo`, `trend_score`, `trend_direction`,
+    `average_search_interest`, `recent_search_interest`,
+    `trend_observation_count`, `related_query_count`,
+    `rising_query_count`, `regional_spread`,
+    `marketplace_sample_size` (renomeado depois da revisão de
+    modelagem -- ver adendo abaixo), `price_dispersion`,
+    `source_coverage`, `notes` -- com validação de faixa em
+    `__post_init__` (mesmo padrão da Fase 1).
+  - `build_demand_signals()` — monta `DemandSignals` a partir de
+    `TrendData`/`TrendMetrics` (Fase 4) e/ou `MercadoLivreItem` (Fase
+    3), documentando honestamente qualquer fonte ausente em `notes`.
+- `src/demand_analysis.py`:
+  - `analyze_demand()` — calcula `trend_contribution`,
+    `breadth_contribution`, `regional_contribution`,
+    `marketplace_contribution`, o Demand Score (média ponderada só
+    sobre os componentes disponíveis) e o Confidence Score (sempre
+    calculável).
+  - `DemandAnalysisResult` -- inclui `observed`, `derived` e
+    `unavailable` para a transparência de evidência pedida no CLI.
+- `src/main.py` — nova opção `4. Analyze Demand`, que tenta a Fase 4
+  (tendência) e a Fase 3 (marketplace) **independentemente** -- uma
+  falha em uma não bloqueia a outra -- e exibe o relatório completo com
+  a seção Observado/Derivado/Indisponível.
+- `tests/test_demand_models.py` e `tests/test_demand_analysis.py` — 23
+  testes determinísticos cobrindo demanda forte com alta e baixa
+  confiança, demanda fraca, demanda crescente mas nichada, demanda
+  estável e ampla, dados esparsos, dados de marketplace ausentes,
+  sinais totalmente vazios, e valores inválidos.
+- Validação real feita ao vivo: numa chamada, o Actor devolveu um erro
+  interno (`"No data returned"`) -- tratado corretamente como
+  indisponível, sem travar; na chamada seguinte, Demand Score 26.95,
+  Confidence Score 67.50, com `related_query_count` e `regional_spread`
+  vindo como 0 (não indisponíveis) -- mostrando a diferença real entre
+  "sabemos que é zero" e "não sabemos".
+
+### 6. Termos técnicos aprendidos
+
+- **termo:** Proxy
+  **definição:** um sinal indireto, mais fácil de medir, usado como
+  substituto de algo que não conseguimos medir diretamente.
+  **como apareceu no projeto:** interesse de busca é usado como proxy
+  de demanda real, já que não temos acesso a vendas reais.
+
+- **termo:** Signal (sinal)
+  **definição:** qualquer dado observável que carrega informação
+  relevante para a pergunta que estamos tentando responder.
+  **como apareceu no projeto:** `trend_score`, `related_query_count`,
+  `regional_spread` são todos sinais de mercado.
+
+- **termo:** Demand proxy
+  **definição:** um proxy especificamente usado para estimar demanda de
+  um produto, sem medir vendas diretamente.
+  **como apareceu no projeto:** todos os campos de `DemandSignals` são,
+  coletivamente, os demand proxies deste projeto.
+
+- **termo:** Confidence score
+  **definição:** um número que representa o quanto confiamos em uma
+  conclusão, baseado na quantidade e qualidade da evidência -- separado
+  da força da própria conclusão.
+  **como apareceu no projeto:** `DemandAnalysisResult.confidence_score`,
+  calculado a partir de `source_coverage`, completude dos componentes e
+  volume de observações.
+
+- **termo:** Evidence coverage (cobertura de evidência)
+  **definição:** a proporção de fontes de evidência possíveis que
+  realmente contribuíram dados para uma análise.
+  **como apareceu no projeto:** `source_coverage = sources_available /
+  TOTAL_SOURCE_FAMILIES` -- hoje, no máximo 0.5, porque só uma das duas
+  fontes possíveis está disponível.
+
+- **termo:** Feature
+  **definição:** um valor numérico derivado, pronto para ser usado em
+  um cálculo ou modelo -- a "matéria-prima processada" da análise.
+  **como apareceu no projeto:** cada campo de `DemandSignals` é uma
+  feature derivada de dados brutos da Fase 3/4.
+
+- **termo:** Derived metric (métrica derivada)
+  **definição:** um valor calculado a partir de outros dados, não
+  observado diretamente de nenhuma fonte externa.
+  **como apareceu no projeto:** `trend_contribution`,
+  `breadth_contribution`, `regional_contribution` e
+  `marketplace_contribution` -- nenhum vem direto de uma API.
+
+- **termo:** Deterministic scoring (pontuação determinística)
+  **definição:** um cálculo de pontuação cujo resultado depende
+  apenas dos dados de entrada -- sempre o mesmo para a mesma entrada.
+  **como apareceu no projeto:** `analyze_demand()` inteiro, testado com
+  23 casos fixos.
+
+- **termo:** Calibration (calibração)
+  **definição:** o processo de ajustar os parâmetros de um modelo
+  (pesos, escalas) usando dados reais, depois que o modelo já está em
+  uso.
+  **como apareceu no projeto:** todas as constantes de peso em
+  `src/demand_analysis.py` são isoladas no topo do módulo exatamente
+  para serem recalibradas depois, sem reescrever a lógica.
+
+- **termo:** Missing data (dado ausente)
+  **definição:** a ausência honesta de um valor, representada
+  explicitamente (`None`), em vez de um valor inventado ou um zero
+  enganoso.
+  **como apareceu no projeto:** `marketplace_sample_size=None`
+  enquanto o Mercado Livre estiver bloqueado -- excluído do cálculo, não
+  tratado como zero.
+
+- **termo:** Uncertainty (incerteza)
+  **definição:** o grau em que uma conclusão pode estar errada por
+  falta de evidência suficiente -- distinto da conclusão em si.
+  **como apareceu no projeto:** representada explicitamente pelo
+  Confidence Score, nunca misturada dentro do Demand Score.
+
+- **termo:** Source quality (qualidade da fonte)
+  **definição:** o quão confiável e completa é uma fonte de dados
+  específica, independente de quantas fontes existem.
+  **como apareceu no projeto:** discutido na avaliação de fontes da
+  Fase 5 -- o Actor da Apify tem qualidade variável (inconsistência
+  documentada na Fase 4), o que reduz a confiança mesmo quando os dados
+  chegam.
+
+### 7. Comandos/ferramentas usados
+
+```bash
+python -m src.main          # executar a CLI (opção 4 = Analyze Demand)
+python -m pytest -v         # rodar todos os testes via módulo
+pytest -v                   # rodar todos os testes direto
+```
+
+Ferramentas: Python 3.12, `pytest`, `monkeypatch`, reaproveitamento das
+integrações já existentes (Apify/Google Trends da Fase 4, Mercado Livre
+da Fase 3) sem nenhuma dependência nova.
+
+### 8. Como explicar isso para um recrutador ou cliente
+
+"Eu construí uma camada de análise de demanda totalmente determinística
+-- sem IA generativa -- que combina os sinais de mercado que já tínhamos
+integrado (tendência de busca via Google Trends, e marketplace via
+Mercado Livre) em um Demand Score explicável. O ponto mais importante
+de design é a separação entre 'quão forte parece a demanda' (Demand
+Score) e 'quanta evidência real sustenta essa conclusão' (Confidence
+Score) -- dois números que nunca devem ser confundidos, porque hoje só
+temos uma fonte de dados confiável, então qualquer conclusão forte vem
+necessariamente com confiança limitada. Isso é transparência de
+verdade: o relatório final separa explicitamente o que foi observado, o
+que foi derivado por cálculo, e o que simplesmente não temos como saber
+-- nunca fabricando um número para preencher uma lacuna."
+
+### 9. O que devo lembrar desta fase
+
+- **Nunca misturar "quão forte" com "quanta certeza"** em um único
+  número -- são perguntas diferentes, e tratá-las como uma só esconde
+  informação crítica de quem for usar o resultado.
+- **Um componente ausente deve ser excluído, não zerado** -- "não
+  sabemos" e "sabemos que é fraco" são situações completamente
+  diferentes, e confundi-las distorce o resultado.
+- **Nenhuma pista (proxy) sozinha deve dominar a conclusão** -- por
+  isso cada componente tem um peso máximo, e a pista mais fraca
+  (`rising_query_count`) pesa menos ainda dentro do seu próprio grupo.
+- **Reaproveitar integrações já existentes** (Fases 3 e 4) em vez de
+  construir uma nova é tanto mais simples quanto mais honesto -- a
+  avaliação de fontes desta fase mostrou que não precisávamos (e não
+  devíamos) inventar uma fonte nova só para ter mais dados.
+- **Confidence baixa não é um bug** -- é a representação honesta de
+  que só temos uma fonte de dados funcionando agora. Melhorar isso
+  significa restaurar o Mercado Livre, não forçar o número a subir.
+- **Separar o modelo de dados (`demand_models.py`) da lógica de
+  cálculo (`demand_analysis.py`)** -- o mesmo padrão arquitetural das
+  Fases 1 e 4 -- é o que permite adicionar uma nova fonte de demanda no
+  futuro (ex.: um Demand Agent) sem reescrever a matemática de
+  pontuação.
+
+### Adendo — Revisão de modelagem antes do commit (3 bugs corrigidos)
+
+Antes de comitar a Fase 5, fizemos uma revisão de modelagem e
+encontramos três problemas reais de design -- nenhum deles exigia
+código novo complexo, mas todos exigiam pensar com mais cuidado sobre o
+que cada número realmente significa.
+
+**1. Zero observado vs. indisponível/não confiável**
+
+A Fase 4 já tinha provado que o Actor da Apify pode devolver uma seção
+vazia (`related_queries` ou `interest_by_region`) enquanto outras
+seções, na mesma chamada, vêm cheias. O código original da Fase 5
+tratava `len(related_queries) == 0` como "zero buscas relacionadas" --
+um sinal real de pouca demanda. Mas isso está errado: uma lista vazia
+pode significar duas coisas completamente diferentes:
+
+- **(A) zero observado**: o provedor rodou essa seção com sucesso e o
+  resultado real é zero (ex.: um termo tão nichado que realmente não
+  tem buscas relacionadas).
+- **(B) indisponível/não confiável**: o provedor falhou, omitiu ou foi
+  inconsistente nessa seção especificamente -- não sabemos se o valor
+  real é zero ou não.
+
+Confundir (A) com (B) é um erro de modelagem sério: ele faz um "não
+sei" virar um "sei que é fraco", o que distorce a conclusão sem
+nenhuma base real. A correção foi adicionar metadados de
+disponibilidade por seção em `TrendData`
+(`related_queries_available`, `regional_interest_available`,
+`interest_over_time_available`), calculados pela camada de integração
+(`src/integrations/apify_trends.py`) -- a única camada com acesso à
+resposta crua da Apify para tomar essa decisão. Hoje, como o Actor não
+nos dá nenhum sinal explícito de sucesso/falha por seção, usamos a
+melhor heurística disponível: **lista vazia = indisponível**, lista
+com qualquer conteúdo = disponível (e confiável, mesmo que os valores
+dentro dela sejam zero). Isso é uma escolha deliberadamente
+conservadora, documentada como tal -- não é uma certeza absoluta, é a
+opção mais honesta dado o que realmente temos para decidir.
+
+**2. Confidence Score alto demais para uma única família de fonte**
+
+Uma execução real em produção (antes da correção) devolveu Demand
+Score 26.95 com Confidence Score 67.50 -- usando **só uma** família de
+fonte (tendência via Apify; o Mercado Livre estava bloqueado). Um
+Confidence de 67.5 parece "evidência razoavelmente forte", mas na
+real­idade só tínhamos um único "testemunho".
+
+Isso revela a diferença entre dois conceitos que a fórmula antiga
+misturava sem querer:
+
+- **Data completeness (completude de dados)**: de tudo que UMA fonte
+  poderia nos contar, quanto dela recebemos de fato? (`interest_over_time`
+  + `related_queries` + `interest_by_region`, todos vindos da MESMA
+  chamada à Apify/Google Trends.)
+- **Source independence (independência de fonte)** / **evidence
+  diversity (diversidade de evidência)**: quantas fontes DIFERENTES e
+  **correlacionadas entre si** (`correlated evidence`) confirmam a
+  mesma conclusão?
+
+`interest_over_time`, `related_queries` e `interest_by_region` são
+**evidência correlacionada**: todos vêm do mesmo Google Trends, pela
+mesma chamada do mesmo Actor. Ter os três completos é ótima
+*completude* -- mas não são três testemunhas independentes, são uma
+testemunha só, cujo depoimento ouvimos até o fim. Só uma fonte
+realmente diferente (o Mercado Livre, por exemplo) seria uma segunda
+testemunha de verdade.
+
+A fórmula antiga somava `source_coverage` (peso 50%) com completude
+(30%) e volume (20%) como três parcelas aditivas -- isso deixava
+completude e volume "compensarem" a falta de uma segunda fonte,
+inflando o Confidence. A correção trocou isso por um modelo em duas
+etapas:
+
+```
+internal_quality_score = 0.6 * completeness_score + 0.4 * volume_score
+coverage_cap            = 100 * source_coverage
+confidence_score        = min(internal_quality_score, coverage_cap)
+```
+
+Com 1 de 2 famílias de fonte, `coverage_cap = 50` -- o Confidence
+**nunca** passa de 50, não importa quão completos ou volumosos sejam
+os dados daquela única fonte. Com 2 de 2, o teto sobe para 100. Isso é
+exatamente **por que a confiança precisa ser limitada pela cobertura de
+fontes independentes**: completude mede "quanto ouvimos de uma
+testemunha"; cobertura mede "quantas testemunhas diferentes temos" --
+e nenhuma quantidade de detalhe extra transforma uma testemunha em
+duas.
+
+**3. `marketplace_result_count` não era uma contagem total**
+
+O campo se chamava "contagem de resultados de marketplace", mas na
+verdade era `len(search_products(query))` -- o número de itens
+devolvidos em UMA página da API, limitado pelo parâmetro `limit`
+(padrão 10). Isso nunca foi uma contagem total de anúncios no
+marketplace -- é só o tamanho da página que pedimos. Usar isso como
+sinal de demanda estaria, na prática, pontuando nosso próprio
+parâmetro de busca, não o mercado real. Renomeamos o campo para
+`marketplace_sample_size` (nome honesto) e o excluímos
+permanentemente do cálculo do Demand Score, até que exista um campo
+real de contagem total extraído da resposta do Mercado Livre.
+
+**Validação ao vivo após a correção:** rodamos `bebedouro para gatos`
+de novo, sem repetir a tentativa em busca de um resultado "bonito". O
+Actor devolveu `related_queries` vazio de novo (mais uma confirmação de
+que essa inconsistência é contínua, não resolvida) -- mas agora o
+relatório mostrou "Breadth: not available" corretamente, em vez de
+pontuar zero. Demand Score 60.40, Confidence Score exatamente 50.00
+(no teto de 1-de-2-fontes) -- confirmado à mão com a fórmula.
+
+**Termos novos desta revisão:**
+
+- **Correlated evidence (evidência correlacionada)**: múltiplos sinais
+  que vêm, na raiz, da mesma fonte/observação -- não contam como
+  confirmações independentes umas das outras.
+- **Source independence (independência de fonte)**: o grau em que
+  diferentes sinais vêm de fontes genuinamente separadas, sem
+  compartilhar a mesma origem de dados.
+- **Evidence diversity (diversidade de evidência)**: ter múltiplas
+  fontes independentes, não múltiplos detalhes da mesma fonte.
+- **Observed zero vs. unavailable/missing**: a diferença entre "o
+  provedor confirmou que é zero" e "não sabemos o valor porque essa
+  parte falhou ou foi omitida" -- tratar os dois como a mesma coisa é
+  um erro de modelagem, não um detalhe menor.

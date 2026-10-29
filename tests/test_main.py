@@ -1,5 +1,7 @@
 import pytest
 
+from src.demand_analysis import analyze_demand
+from src.demand_models import DemandSignals
 from src.integrations.apify_trends import ApifyTrendsResponseError
 from src.integrations.mercadolivre import MercadoLivreItem, MercadoLivreResponseError
 from src.main import (
@@ -7,6 +9,7 @@ from src.main import (
     ask_with_default,
     collect_product,
     collect_scores,
+    format_demand_report,
     format_report,
     format_search_results,
     format_trend_report,
@@ -14,6 +17,7 @@ from src.main import (
     parse_non_empty_text,
     parse_score,
     recommend,
+    run_demand_analysis,
     run_mercado_livre_search,
     run_trend_analysis,
 )
@@ -130,10 +134,10 @@ def test_recommend_handles_unknown_classification():
 def test_parse_menu_choice_accepts_valid_options():
     assert parse_menu_choice("1") == 1
     assert parse_menu_choice("2") == 2
-    assert parse_menu_choice(" 3 ") == 3
+    assert parse_menu_choice(" 4 ") == 4
 
 
-@pytest.mark.parametrize("raw", ["0", "4", "abc", ""])
+@pytest.mark.parametrize("raw", ["0", "5", "abc", ""])
 def test_parse_menu_choice_rejects_invalid_options(raw):
     with pytest.raises(ValueError):
         parse_menu_choice(raw)
@@ -266,3 +270,100 @@ def test_run_trend_analysis_reports_errors_without_crashing(monkeypatch, capsys)
 
     captured = capsys.readouterr()
     assert "Trend analysis failed" in captured.out
+
+
+def _make_demand_signals(**overrides):
+    base = dict(
+        query="bebedouro para gatos",
+        geo="BR",
+        trend_score=70.0,
+        trend_direction="growing",
+        average_search_interest=60.0,
+        recent_search_interest=75.0,
+        trend_observation_count=52,
+        related_query_count=10,
+        rising_query_count=2,
+        regional_spread=20,
+        marketplace_sample_size=None,
+        price_dispersion=None,
+        source_coverage=0.5,
+        notes=["marketplace signals unavailable (test fixture)"],
+    )
+    base.update(overrides)
+    return DemandSignals(**base)
+
+
+def test_format_demand_report_contains_key_sections():
+    signals = _make_demand_signals()
+    result = analyze_demand(signals)
+    report = format_demand_report(signals, result)
+
+    assert "bebedouro para gatos" in report
+    assert "Demand Score" in report
+    assert "PROVISIONAL" in report
+    assert "Confidence Score" in report
+    assert "Trend:" in report
+    assert "Breadth:" in report
+    assert "Regional:" in report
+    assert "Marketplace:" in report
+    assert "Observed:" in report
+    assert "Derived:" in report
+    assert "Unavailable:" in report
+    assert "marketplace listing/price data (total result count not available)" in report
+    assert "exact sales volume" in report
+    assert "NOT fed into the Phase 1 Opportunity Scoring Engine" in report
+
+
+def test_run_demand_analysis_combines_both_sources(monkeypatch, capsys):
+    trend_data = TrendData(
+        query="bebedouro para gatos",
+        geo="BR",
+        timeframe="today 12-m",
+        retrieved_at="2026-10-29T12:00:00Z",
+        interest_over_time=[TrendPoint(date="2026-01-01", value=60, formatted_value="60")],
+        interest_by_region=[TrendRegion(region_code="BR-SP", region_name="Sao Paulo", value=90)],
+        related_top_queries=[RelatedQuery(query="q1", value=10, formatted_value="10", link=None)],
+        related_rising_queries=[],
+        source="apify:themineworks/google-trends-pro",
+    )
+    marketplace_item = MercadoLivreItem(
+        item_id="MLB1",
+        title="Bebedouro",
+        price=50.0,
+        currency_id="BRL",
+        seller_id=1,
+        category_id="MLB1",
+        condition="new",
+        permalink=None,
+        free_shipping=None,
+        available_quantity=None,
+    )
+
+    monkeypatch.setattr("src.main.fetch_trend_data", lambda query, geo="BR": trend_data)
+    monkeypatch.setattr("src.main.search_products", lambda query: [marketplace_item])
+
+    fake_input = make_input(["bebedouro para gatos", ""])
+    run_demand_analysis(fake_input)
+
+    captured = capsys.readouterr()
+    assert "DEMAND ANALYSIS REPORT" in captured.out
+    assert "Unavailable:" in captured.out
+
+
+def test_run_demand_analysis_handles_both_sources_failing_without_crashing(monkeypatch, capsys):
+    def fake_fetch_trend_data(query, geo="BR"):
+        raise ApifyTrendsResponseError(status_code=403, message="Forbidden")
+
+    def fake_search_products(query):
+        raise MercadoLivreResponseError(status_code=403, message="Forbidden")
+
+    monkeypatch.setattr("src.main.fetch_trend_data", fake_fetch_trend_data)
+    monkeypatch.setattr("src.main.search_products", fake_search_products)
+
+    fake_input = make_input(["bebedouro para gatos", ""])
+    run_demand_analysis(fake_input)
+
+    captured = capsys.readouterr()
+    assert "trend source unavailable" in captured.out
+    assert "marketplace source unavailable" in captured.out
+    assert "DEMAND ANALYSIS REPORT" in captured.out

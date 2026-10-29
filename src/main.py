@@ -1,20 +1,23 @@
 """RAVZ Product Hunter CLI.
 
 Phase 2: Manual Analyzer. Phase 3: Mercado Livre search. Phase 4: Trend
-analysis.
+analysis. Phase 5: Demand analysis.
 
 This module is the presentation layer: it collects input from the user,
 delegates all scoring logic to src.models / src.scoring, all Mercado
 Livre HTTP/JSON handling to src.integrations.mercadolivre, all Apify/trend
-HTTP/JSON handling to src.integrations.apify_trends, and all trend-metric
-math to src.trend_analysis, then renders the result. It contains no
-scoring math and no HTTP logic of its own.
+HTTP/JSON handling to src.integrations.apify_trends, all trend-metric math
+to src.trend_analysis, and all demand math to src.demand_models /
+src.demand_analysis, then renders the result. It contains no scoring
+math and no HTTP logic of its own.
 
 Input-collecting functions accept an injectable `input_func` so the
 retry/validation logic can be unit tested without calling the real
 built-in input().
 """
 
+from src.demand_analysis import analyze_demand
+from src.demand_models import build_demand_signals
 from src.integrations.apify_trends import (
     DEFAULT_GEO,
     DEFAULT_TIMEFRAME,
@@ -67,10 +70,10 @@ def parse_non_empty_text(raw: str) -> str:
 
 
 def parse_menu_choice(raw: str) -> int:
-    """Validate that raw text is one of the main menu options ("1", "2" or "3")."""
+    """Validate that raw text is one of the main menu options (1-4)."""
     text = raw.strip()
-    if text not in {"1", "2", "3"}:
-        raise ValueError("choose 1, 2 or 3")
+    if text not in {"1", "2", "3", "4"}:
+        raise ValueError("choose 1, 2, 3 or 4")
     return int(text)
 
 
@@ -256,6 +259,69 @@ def format_trend_report(data, metrics) -> str:
     return "\n".join(lines)
 
 
+def format_demand_report(signals, result) -> str:
+    """Render DemandSignals + DemandAnalysisResult as a human-readable report.
+
+    Both scores are always labeled PROVISIONAL, and evidence is always
+    split into observed / derived / unavailable so nothing is implied
+    to be more certain than it is.
+    """
+    lines = [
+        "=" * 50,
+        "DEMAND ANALYSIS REPORT (PROVISIONAL)",
+        "=" * 50,
+        f"Query: {result.query}",
+        f"Geo: {signals.geo}",
+        "",
+        f"Demand Score: {_format_optional(result.demand_score)} "
+        "(PROVISIONAL -- not validated against real sales outcomes)",
+        f"Confidence Score: {result.confidence_score:.2f} "
+        "(how much evidence supports the Demand Score above)",
+        "",
+        "Contributions (None = excluded from Demand Score, not penalized):",
+        f"  Trend:       {_format_optional(result.trend_contribution)}",
+        f"  Breadth:     {_format_optional(result.breadth_contribution)}",
+        f"  Regional:    {_format_optional(result.regional_contribution)}",
+        f"  Marketplace: {_format_optional(result.marketplace_contribution)}",
+    ]
+
+    lines.append("")
+    lines.append("Observed:")
+    for key, value in result.observed.items():
+        lines.append(f"  - {key}: {_format_optional(value)}")
+
+    lines.append("")
+    lines.append("Derived:")
+    for key, value in result.derived.items():
+        lines.append(f"  - {key}: {_format_optional(value)}")
+
+    lines.append("")
+    lines.append("Unavailable:")
+    if result.unavailable:
+        for item in result.unavailable:
+            lines.append(f"  - {item}")
+    else:
+        lines.append("  (none -- all signal groups had data)")
+    lines.append("  - exact sales volume, number of buyers, revenue, conversion")
+    lines.append("    rate, and absolute search volume are never available from")
+    lines.append("    any current source and are never estimated")
+
+    if result.notes:
+        lines.append("")
+        lines.append("Notes:")
+        for note in result.notes:
+            lines.append(f"  - {note}")
+
+    lines.append("")
+    lines.append(TREND_DATA_WARNING)
+    lines.append(
+        "This Demand Score is NOT fed into the Phase 1 Opportunity Scoring "
+        "Engine yet."
+    )
+    lines.append("=" * 50)
+    return "\n".join(lines)
+
+
 def run_manual_analyzer(input_func=input) -> None:
     """Run the Phase 2 Manual Product Analyzer flow end to end."""
     print("\nManual Product Analyzer")
@@ -315,20 +381,65 @@ def run_trend_analysis(input_func=input) -> None:
     print(format_trend_report(data, metrics))
 
 
+def run_demand_analysis(input_func=input) -> None:
+    """Run the Phase 5 demand-analysis flow end to end.
+
+    Attempts both currently-integrated sources (trend/search-interest
+    via Apify, marketplace via Mercado Livre) independently -- a
+    failure in one does not block the other, and whichever source
+    fails is honestly reported as unavailable, never guessed.
+
+    Does NOT feed the resulting Demand Score into the Phase 1
+    Opportunity Scoring Engine.
+    """
+    print("\nAnalyze Demand")
+    query = ask("Search term: ", parse_non_empty_text, input_func)
+    geo = ask_with_default(f"Geo [default {DEFAULT_GEO}]: ", DEFAULT_GEO, input_func)
+
+    trend_data = None
+    trend_metrics = None
+    try:
+        trend_data = fetch_trend_data(query, geo=geo)
+        trend_metrics = analyze_trend(trend_data)
+    except ApifyTrendsError as exc:
+        print(f"\n(trend source unavailable: {exc})")
+
+    marketplace_items = None
+    try:
+        marketplace_items = search_products(query)
+    except MercadoLivreError as exc:
+        print(f"(marketplace source unavailable: {exc})")
+
+    signals = build_demand_signals(
+        query,
+        geo,
+        trend_data=trend_data,
+        trend_metrics=trend_metrics,
+        marketplace_items=marketplace_items,
+    )
+    result = analyze_demand(signals)
+
+    print()
+    print(format_demand_report(signals, result))
+
+
 def main() -> None:
     print("RAVZ Product Hunter")
     print("1. Manual Product Analyzer")
     print("2. Search Mercado Livre")
     print("3. Analyze Trend")
+    print("4. Analyze Demand")
 
-    choice = ask("Choose an option (1-3): ", parse_menu_choice)
+    choice = ask("Choose an option (1-4): ", parse_menu_choice)
 
     if choice == 1:
         run_manual_analyzer()
     elif choice == 2:
         run_mercado_livre_search()
-    else:
+    elif choice == 3:
         run_trend_analysis()
+    else:
+        run_demand_analysis()
 
 
 if __name__ == "__main__":
