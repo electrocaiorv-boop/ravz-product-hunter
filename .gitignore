@@ -6,3 +6,8 @@ __pycache__/
 .pytest_cache/
 .vscode/
 data/raw/
+
+# Machine-specific Claude Code settings only.
+# Project-shared Claude configuration (.claude/agents/, .claude/skills/,
+# hooks) is intentionally NOT ignored -- it is versioned infrastructure.
+.claude/settings.local.json
