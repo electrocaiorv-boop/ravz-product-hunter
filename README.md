@@ -1118,6 +1118,362 @@ formulas (no imports from any of those modules).
   integration.
 - Not validated against real outcomes.
 
+## Phase 11 scope
+
+Phase 11 is the **composition layer**: it takes the real outputs of the
+seven independent domain engines (Phases 4–10) and combines them into
+one explainable Opportunity analysis — without destroying the semantic
+guarantees each earlier phase established.
+
+It is **composition, not orchestration**. Nothing here fetches,
+schedules, or decides what to analyze; a future Orchestrator phase will
+do that and feed its results into this layer.
+
+```
+Domain Analysis Result -> Domain Adapter -> OpportunityComponent
+                                                 -> Composition Engine
+```
+
+### The central finding: Demand and Trend are not independent evidence
+
+Before wiring anything, every component's evidence was traced back to
+its raw source. Demand and Trend both descend from **one** Apify Google
+Trends Actor call:
+
+```
+interest_over_time -> recent_average + direction
+                        |-> TrendMetrics.provisional_trend_score
+                        |-> DemandAnalysis.trend_contribution  (w 0.40)
+related_*_queries     -> DemandAnalysis.breadth_contribution   (w 0.25)
+interest_by_region    -> DemandAnalysis.regional_contribution  (w 0.20)
+marketplace            -> DemandAnalysis.marketplace_contribution
+                          -- permanently None
+```
+
+Because the marketplace component is permanently unavailable,
+**100% of today's Demand Score is Google-Trends evidence**, and
+`recent_average`/`direction` are literally the same two numbers that
+dominate the Trend Score. Using the Phase 1 conceptual split
+(Demand 30% + Trend 20%) would stake **half** the Opportunity Score on
+a single provider call and count that interest series **twice**.
+
+Classification of every overlap found:
+
+| Pair | Class | Decision |
+|---|---|---|
+| Demand ↔ Trend | **duplicated** | one evidence family, one weighted representative |
+| Logistics ↔ Risk | correlated | both kept: Logistics never *scores* the shared observed rates |
+| Supplier ↔ Risk | distinct | both kept at full weight |
+| Supplier ↔ Margin | distinct | `unit_cost` is unscored evidence in Supplier |
+| Competition ↔ Risk | independent | rivals' concentration vs. *our* dependency |
+| Supplier ↔ Logistics | distinct | sourcing leg vs. last-mile leg |
+
+### Evidence families
+
+The overlap rule is declared as **data**, not as conditionals in the
+engine — `EvidenceFamilyPolicy` in `src/opportunity_models.py` — so a
+future refactor cannot quietly reintroduce Trend as an independent
+weighted vote without deleting a declared policy object and failing its
+tests.
+
+The search-interest family carries **one** weight of 0.30 between both
+members. Exactly one member is ever weighted:
+
+- **Demand** is preferred — it consumes the family most completely
+  (interest level, direction, related-query breadth, regional spread).
+- **Trend** is the fallback, so supplying only a Trend result does not
+  leave the family's weight unearned.
+
+The non-elected member is still reported (score, direction, provenance)
+with zero weighted contribution and an explicit `overlap_policy` —
+visible, but not voting twice.
+
+### Two scoring models, side by side
+
+| Dimension | `legacy-v1` | `integrated-v1` | Layer | Direction |
+|---|---|---|---|---|
+| Demand | 30% | **30%** (family) | commercial | positive |
+| Trend | 20% | folded into the family | commercial | positive |
+| Competition | 15% | 15% | commercial | negative |
+| Margin | 15% | **20%** | commercial | positive |
+| Supplier | 10% | **12%** | operational | positive |
+| Logistics | 5% | **8%** | operational | positive |
+| Risk | 5% | **15%** | commercial | negative |
+
+`src/scoring.py` is **untouched**: the Phase 1/2 manual API keeps its
+own weights, its mandatory-seven `ComponentScores`, and its existing
+behaviour. The integrated model is a separate, explicitly versioned
+table. `tests/test_legacy_compatibility.py` pins both so neither can
+drift into the other.
+
+#### Why integrated-v1 does not inherit legacy's weights
+
+This was the final hardening decision of Phase 11, and it reverses an
+earlier draft.
+
+That draft gave the search-interest family 0.50 — legacy's
+`Demand 0.30 + Trend 0.20` — reasoning that "removing the double count
+should not also re-weight the business judgment." **That reasoning was
+wrong.** Legacy's 0.50 was split across what it *believed* were two
+independent sources of evidence. Once the audit proved they are one
+evidence family fed by one provider call, preserving 0.50 does not
+preserve the original judgment — it silently converts
+
+> "half the score comes from two independent demand signals"
+
+into
+
+> "half the score comes from one Google Trends call."
+
+Those are materially different claims, and the second is far more
+concentrated than Phase 1 ever intended.
+
+```
+legacy business weights  !=  integrated evidence-justified weights
+```
+
+So integrated-v1 re-derives each weight from the **marginal information
+value** that evidence family actually contributes, given what the
+project can observe today:
+
+| Weight | Rationale |
+|---|---|
+| search-interest **0.30** | Genuine evidence of interest, but currently dependent on a single Google Trends / Apify evidence family, and search interest is **not** observed marketplace sales. Material, not dominant. |
+| competition **0.15** | Retains real influence over attractiveness without dominating commercial viability. |
+| margin **0.20** | Unit economics are directly material to whether the opportunity is financially viable at all. Deliberately above the family: a product nobody searches for is a weak idea, but a product that loses money per unit is not an opportunity in the first place. |
+| supplier **0.12** | Sourcing capability materially determines execution and deserves more than a marginal role. |
+| logistics **0.08** | Movement and fulfillment matter, but stay below Margin and Supplier. |
+| risk **0.15** | Downside, concentration and instability deserve material influence — tripled from legacy's 0.05, which was too small for a dimension the project treats as mandatory evidence. |
+
+All six are **provisional business heuristics** chosen from documented
+reasoning, not calibrated against outcomes. Real outcome data may well
+justify recalibrating every one of them — that would be a new model
+version, not an edit to this one.
+
+### Commercial attractiveness is not operational readiness
+
+A business can look excellent on paper — lots of customer interest,
+acceptable competition, strong margin, manageable risk — while nobody
+has checked whether a supplier can actually provide the item or whether
+it can be shipped reliably. That opportunity is **commercially
+attractive and operationally unvalidated**, and those are different
+statements that must not collapse into one.
+
+The seven components are therefore partitioned into two validation
+layers, and every component is required for its own layer:
+
+| Layer | Weight | Members | Question |
+|---|---|---|---|
+| commercial | 0.80 | search-interest family, competition, margin, risk | "is the market/economic case validated?" |
+| operational | 0.20 | supplier, logistics | "is execution validated?" |
+
+A family is satisfied when *any* of its members is available; a
+non-family component is satisfied only by itself.
+
+`commercial_validation_complete` / `operational_validation_complete`
+and the matching `commercial_coverage` / `operational_coverage` are
+reported separately, so both questions can be answered independently.
+
+### Score direction, inverted exactly once
+
+`raw_score` is always the domain's own number in the domain's own
+direction; `opportunity_score` is re-oriented so higher is always
+better. Competition and Risk are inverted (`100 - score`) in
+`to_opportunity_oriented()` and **nowhere else** — Risk Analysis
+performs no internal inversion, and Logistics deliberately computes
+"ease" so it is already high-is-good.
+
+### Missing is missing
+
+A domain that withheld its score is `available=False` with
+`raw_score=None` and a specific reason. It is never converted to 0,
+never to 50, never to "safe", never to "average". Its weight is simply
+not earned.
+
+### False safety from missing negative evidence
+
+Naive renormalization has a dangerous asymmetry. If everything known
+scores 90 and Risk (weight 0.15) is unknown:
+
+```
+renormalize over available only  -> 90.00
+if Risk had been known at 60     -> 82.50
+```
+
+The score would **rise** precisely because we know nothing about risk.
+Two independent protections:
+
+1. **Gate** (primary): Competition and Risk are commercial
+   requirements, so a missing one forces
+   `readiness = INCOMPLETE_EVIDENCE` and a withheld classification.
+   Unknown risk can never be labelled "Strong opportunity".
+2. **Ceiling** (numeric): the aggregate is capped at the value it would
+   have if the missing negative dimension were neutral. This is **not**
+   `None -> 50` — the component stays explicitly unknown and no
+   contribution is fabricated; only the *aggregate* is prevented from
+   profiting from ignorance. Because it is a `min()`, it can only lower
+   an inflated score, never invent bad news for already-weak evidence.
+
+The guard was **re-verified against the hardened weights**: Competition
+and Risk now carry 0.15 each (0.30 combined, up from 0.20), so the
+ceiling binds harder than before — the same formula is strictly more
+protective, and the earlier 88.0 cap in the all-90s/no-risk example is
+now 84.0.
+
+A neutral ceiling is the tightest bound available without fabricating
+evidence; the **gate**, not the ceiling, is what guarantees such a
+result is never presented as validated.
+
+### Readiness (not a domain status)
+
+| Readiness | Meaning |
+|---|---|
+| `READY` | both layers complete, no blocker → final classification emitted |
+| `OPERATIONALLY_UNVALIDATED` | commercial complete, Supplier and/or Logistics missing → analytical score shown, final classification withheld |
+| `INCOMPLETE_EVIDENCE` | a **commercial** requirement is missing → the business case itself cannot be evaluated; analytical score shown, classification withheld |
+| `BLOCKED` | a domain reported a hard blocker → checked first; score shown, recommendation withheld |
+
+Precedence is strict:
+
+```
+BLOCKED > INCOMPLETE_EVIDENCE > OPERATIONALLY_UNVALIDATED > READY
+```
+
+Commercial outranks operational because an unevaluable business case
+makes the execution question moot.
+
+`OPERATIONALLY_UNVALIDATED` is deliberately **not** folded into
+`INCOMPLETE_EVIDENCE`. They answer different questions, and conflating
+them would discard the most actionable thing the system can say: *the
+commercial case holds up — go verify sourcing and shipping.*
+
+Despite the unavoidable word overlap, this vocabulary is distinct from
+Supplier's/Logistics' `operational_status` and Risk's `risk_status`: it
+is an opportunity-level statement about evidence coverage, never a
+domain's own verdict.
+
+### Final classification is emitted only when READY
+
+The analytical score is computed and shown whenever any weighted
+evidence exists — hiding useful arithmetic would be its own kind of
+dishonesty. But the legacy bands are emitted only for `READY`.
+
+Outside READY, `classification` is `None` and `withheld_reason`
+explains why. For `OPERATIONALLY_UNVALIDATED` only — the one non-READY
+state where the commercial case *is* fully evaluated — an explicitly
+non-final band is exposed as `analytical_band_non_final`, so a report
+can say "the commercial case scores in the Strong band, but execution
+is unvalidated" without ever stamping the opportunity approved. It is
+deliberately **not** populated for `INCOMPLETE_EVIDENCE` (the business
+case is not evaluable, so a band would mislead) or for `BLOCKED` (the
+opportunity is moot while the blocker stands).
+
+Mercado Livre search is unreachable (HTTP 403) in this environment, so
+Competition is usually unavailable and **most live integrated results
+are therefore withheld**. That is a true statement about the project's
+current evidence position, not a defect to engineer around.
+
+### Blockers are never averaged away
+
+A product can score Demand 95 / Margin 90 and still be impossible to
+source. Blockers (today: only Supplier's zero-stock and
+stock-below-MOQ) are checked **before** any evidence-completeness
+question, surfaced namespaced by the domain that found them, and
+override publishability regardless of how good everything else looks.
+The arithmetic is still shown — what is withheld is the
+*recommendation*, not the score.
+
+### Coverage is not confidence
+
+`component_coverage` = known weight ÷ total configured weight. It
+answers only "how much of the weight do we have *any* evidence for."
+It is **not** confidence, **not** completeness, and **not** accuracy.
+`commercial_coverage` and `operational_coverage` are the same measure
+restricted to one validation layer.
+
+Each domain's own evidence metric is preserved separately and
+**unaveraged** in `EvidenceProfile`: `demand_confidence`,
+`competition_confidence`, `margin_cost_completeness`,
+`supplier_/logistics_/risk_evidence_completeness`, plus
+`trend_observation_count` (Trend has no evidence metric, so none is
+invented). Averaging a bounded-confidence figure with a field-count
+completeness figure would produce a number with no definable meaning,
+so no aggregate is offered.
+
+### Rounding policy
+
+The integrated engine classifies the **exact, unrounded** value: a
+score of 79.996 displays as `80.00` but must not become "Strong
+opportunity". Legacy `score_opportunity()` has always classified the
+already-2dp-rounded total and is left exactly as it was — no proven
+bug, and changing it would move previously recorded results. Both
+behaviours are pinned by tests so the divergence stays deliberate.
+
+### What's new
+
+- `src/opportunity_models.py` — `EvidenceFamilyPolicy`,
+  `OpportunityComponent`, `EvidenceProfile`,
+  `OpportunityAnalysisResult`, the integrated weight contract, the two
+  validation layers, the readiness vocabulary
+- `src/opportunity_integration.py` — seven adapters +
+  `compose_opportunity()`
+- `src/main.py` — CLI option `10. Integrated Opportunity Analysis`,
+  `format_opportunity_report()`
+- `tests/test_opportunity_models.py`,
+  `tests/test_opportunity_integration.py`,
+  `tests/test_legacy_compatibility.py`
+
+### Run it
+
+```bash
+python -m src.main
+```
+
+Choose option `10`. It takes **no input**: rather than make you retype
+every field from options 3–9, it runs the real domain engines over four
+clearly-labelled illustrative scenarios — one per readiness state:
+
+| Scenario | Readiness |
+|---|---|
+| A — complete evidence | `READY` |
+| B — commercially attractive, operationally unvalidated | `OPERATIONALLY_UNVALIDATED` |
+| C — commercial evidence incomplete (Margin withheld) | `INCOMPLETE_EVIDENCE` |
+| D — Supplier blocked (stock below MOQ) | `BLOCKED` |
+
+Those inputs are example values defined in `src/main.py` — explicitly
+not fetched, not observed, and not about any real product. The
+composition layer performs no HTTP at all.
+
+### Important design rule
+
+The composition layer imports **only** its own canonical contract — no
+domain-analysis module, no integration, no HTTP, no LLM, no database.
+Adapters translate and relabel; they never recompute a domain's
+scoring, never fetch, and never guess a missing value. Layering is
+one-directional and enforced by tests: no domain module may import the
+opportunity layer.
+
+### Limitations
+
+- The Opportunity Score is a **provisional business heuristic**, not a
+  calibrated probability. "82" means "this evidence, under this
+  documented weighting, scores 82 of 100" — never an 82% chance of
+  anything.
+- Integrated weights are provisional heuristics re-derived from
+  marginal information value, not calibrated against outcomes. They
+  deliberately do **not** inherit legacy's numbers.
+- The search-interest family's 0.30 reflects that search interest is
+  currently a single-provider signal and is not observed marketplace
+  sales. If a genuine total-result-count field is ever mapped (making
+  Demand multi-source), that weight should be revisited.
+- Competition is usually unavailable in this environment, so most live
+  integrated results are withheld.
+- The false-safety ceiling is the tightest honest bound, not a
+  reconstruction of what the missing evidence would have said.
+- There is no orchestration, persistence, or scheduling: domain results
+  must be supplied by the caller.
+- Not validated against real outcomes.
+
 ## Architecture direction
 
 The system is designed to grow into an orchestrator coordinating
@@ -1136,7 +1492,10 @@ and trusted independently of any external data source.
 
 ### Scoring model
 
-Final score is a weighted combination of seven 0-100 component scores:
+Two scoring models coexist deliberately (see "Phase 11 scope" above).
+
+**`legacy-v1`** (`src/scoring.py`) — seven manually supplied, mandatory
+0–100 component scores:
 
 | Dimension   | Weight | Direction |
 |-------------|--------|-----------|
@@ -1148,9 +1507,30 @@ Final score is a weighted combination of seven 0-100 component scores:
 | Logistics   | 5%     | positive  |
 | Risk        | 5%     | negative  |
 
-Competition and Risk are **negative dimensions**: a higher score means more
-competition or more risk, so each is inverted (`100 - score`) before being
-weighted, instead of being added directly.
+**`integrated-v1`** (`src/opportunity_integration.py`) — real domain
+results, with missing-data semantics, blocker propagation,
+correlated-evidence safeguards, and two validation layers. Its weights
+are **independently derived from marginal information value**, not
+inherited from legacy:
+
+| Dimension   | Weight | Layer       | Direction |
+|-------------|--------|-------------|-----------|
+| Demand      | 30%    | commercial  | positive  |
+| Trend       | (same family weight) | commercial | positive |
+| Competition | 15%    | commercial  | negative  |
+| Margin      | 20%    | commercial  | positive  |
+| Supplier    | 12%    | operational | positive  |
+| Logistics   | 8%     | operational | positive  |
+| Risk        | 15%    | commercial  | negative  |
+
+Demand and Trend share a **single** 30% evidence-family weight because
+they derive from the same provider call, and only one of them is ever
+counted.
+
+In both models, Competition and Risk are **negative dimensions**: a
+higher score means more competition or more risk, so each is inverted
+(`100 - score`) exactly once before being weighted, instead of being
+added directly.
 
 ### Classification
 
@@ -1160,6 +1540,12 @@ weighted, instead of being added directly.
 | 65-79.99            | Worth deeper investigation      |
 | 50-64.99            | Weak or uncertain opportunity   |
 | Below 50            | Reject                          |
+
+In `integrated-v1` these bands are emitted as a **final
+classification** only when `readiness == READY`. Outside READY the
+classification is withheld, and only the `OPERATIONALLY_UNVALIDATED`
+state exposes an explicitly non-final band describing the commercial
+case — see "Final classification is emitted only when READY" above.
 
 ## Install
 
@@ -1199,11 +1585,27 @@ root, so `src` resolves as a package whether you run `pytest` or
 
 14. Continuous improvement
 
-Phase 4 (deterministic trend analysis), Phase 5 (deterministic Demand
-Analysis), Phase 6 (deterministic Competition Analysis), Phase 7
-(deterministic Margin Analysis), and Phase 8 (deterministic Supplier
-Analysis, described above) are layered on top of steps 5-9 — real
-external integrations plus the deterministic groundwork for the
-eventual Trend, Demand, Competition, Margin, and Supplier Agents'
-contributions to the Opportunity Scoring Engine. Phase 8 is the current
-phase.
+Phases 4–10 built one deterministic domain engine each (Trend, Demand,
+Competition, Margin, Supplier, Logistics, Risk) on top of steps 5–9 —
+real external integrations plus the groundwork for the eventual
+specialized Agents' contributions to the Opportunity Scoring Engine.
+
+**Phase 11 (current) is the composition layer** described above: it
+combines those seven engines' real outputs into one explainable
+Opportunity analysis, handling score direction, missing data,
+correlated evidence, and blocker propagation.
+
+Phase 11 is deliberately **not** step 10 (Orchestration). Composition
+answers "given these domain results, what do they support?"
+Orchestration — collecting inputs, calling the domain engines, deciding
+what to analyze and when — is the next step and is not built yet:
+
+```
+            Phase 11 (built)                 Step 10 (next)
+  domain results -> adapters -> composition   Agent/Orchestrator
+                                                  |
+                                                  v
+                                          collects inputs,
+                                          runs domain engines,
+                                          feeds this layer
+```

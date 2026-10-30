@@ -4314,3 +4314,898 @@ Para defender essa frase numa entrevista:
   volatilidade de 0% a 100%) e confirmar que a pontuação nunca inverte
   de direção captura uma classe de bug que um teste pontual poderia
   deixar passar por coincidência.
+
+---
+
+## Fase 11 — Camada de Composição da Oportunidade (integração determinística dos sete domínios)
+
+### 1. Nome da fase
+
+**Fase 11: a camada determinística que normaliza as saídas reais dos
+sete motores de análise independentes (Fases 4-10) num único modelo
+canônico de oportunidade -- preservando a semântica de evidência e a
+proveniência de cada domínio, tratando direção de pontuação, dados
+ausentes, evidência correlacionada e propagação de bloqueadores, e
+impedindo que evidência parcial seja apresentada como uma recomendação
+de negócio totalmente validada.**
+
+### 2. Explicação simples
+
+Imagine que você contratou sete especialistas para avaliar um negócio:
+
+- um estuda a **demanda**
+- um estuda a **tendência**
+- um estuda a **concorrência**
+- um estuda as **finanças**
+- um estuda os **fornecedores**
+- um estuda a **logística**
+- um estuda o **risco**
+
+Cada um entrega um relatório independente. A Fase 11 não é mais um
+especialista: **é o comitê de investimento que lê os sete relatórios e
+decide o que eles sustentam, juntos.**
+
+Um comitê competente precisa entender três coisas que parecem óbvias e
+que softwares erram todo dia:
+
+**Primeiro: a direção de cada relatório.**
+Demanda alta é favorável. Concorrência alta é *desfavorável*. Risco
+alto é *desfavorável*. Somar os sete números crus como se "mais fosse
+sempre melhor" transformaria um mercado saturadíssimo e perigosíssimo
+na melhor oportunidade da lista.
+
+**Segundo: o que significa um relatório que não chegou.**
+Se o especialista financeiro **não entregou o relatório**, isso não
+significa:
+
+- lucratividade = 0 (isso seria afirmar que o produto dá prejuízo)
+- lucratividade = 50 (isso seria afirmar que é mediana)
+- lucratividade = "segura" (isso seria afirmar que está tudo bem)
+
+Significa apenas: **não sabemos.** E "não sabemos se dá lucro" não pode
+virar "oportunidade forte".
+
+Isso vale em dobro para o especialista de risco. Se ninguém investigou
+o risco, o comitê não pode concluir "o risco parece baixo". Pior: se
+você simplesmente *ignora* a fatia de peso do risco e redistribui o
+resto entre as notas boas, a nota final **sobe** -- e ela sobe
+exatamente porque você não sabe nada sobre o risco. Isso é
+**falsa segurança fabricada a partir da ignorância**, e foi uma das
+coisas que esta fase teve que impedir de propósito.
+
+**Terceiro -- e esse é o mais sutil: dois relatórios podem estar
+contando a mesma coisa.**
+
+Suponha que o especialista de demanda, para escrever o relatório dele,
+**leu o relatório do especialista de tendência** e usou aquelas
+conclusões como a maior parte do próprio argumento. Se o comitê agora
+contar os dois relatórios como dois votos independentes, está premiando
+a mesma evidência duas vezes. Não são duas testemunhas confirmando o
+mesmo fato -- é **uma testemunha, ouvida duas vezes.**
+
+Foi exatamente o que a auditoria desta fase encontrou no projeto, e não
+em teoria: o Demand Score é construído a partir dos mesmos números do
+Google Trends que produzem o Trend Score. Usar os pesos originais
+(Demanda 30% + Tendência 20%) colocaria **metade da nota final** em uma
+única chamada de um único provedor, contada duas vezes.
+
+**Quarto: alguns relatórios validam coisas diferentes.**
+
+Um negócio pode parecer fantástico no papel:
+
+- muito interesse de clientes
+- concorrência aceitável
+- margem de lucro boa
+- risco administrável
+
+Mas se ninguém verificou se um fornecedor consegue realmente fornecer o
+item, ou se ele pode ser enviado de forma confiável, a oportunidade é
+**comercialmente atraente e operacionalmente não validada**.
+
+O comitê pode -- e deve -- mostrar a nota analítica. Mas não deveria
+estampar "totalmente aprovado" antes de os especialistas operacionais
+entregarem os relatórios deles. "O caso de negócio fecha" e "dá para
+executar isso" são duas aprovações distintas, e dizer só "faltam dados"
+jogaria fora a informação mais útil que o comitê tem: *qual* das duas
+falta.
+
+E há um quinto ponto, que é a razão de a fase existir separada:
+
+**O comitê lê relatórios. Ele não vai buscar os relatórios.**
+Quem coleta os dados, chama cada especialista e decide quando analisar
+é o **Orquestrador** -- e ele é a fase *seguinte*, não esta. Confundir
+as duas coisas produziria um sistema que finge ser automático enquanto
+metade dos dados ainda é digitada à mão.
+
+### 3. Explicação técnica
+
+#### 3.1. Composição não é orquestração
+
+A arquitetura desta fase é deliberadamente estreita:
+
+```
+resultados de domínio já calculados
+            |
+            v
+      adaptadores        (uma função pura e minúscula por domínio)
+            |
+            v
+  motor de composição    <- src/opportunity_integration.py
+```
+
+E o que vem depois (**não construído**):
+
+```
+            Fase 11 (feita)                    Passo 10 (próximo)
+  resultados -> adaptadores -> composição        Agente/Orquestrador
+                                                        |
+                                                        v
+                                               coleta entradas,
+                                               roda os motores,
+                                               alimenta esta camada
+```
+
+`src/opportunity_integration.py` não busca, não agenda, não repete
+tentativas e não decide o que analisar. Ele recebe resultados e compõe.
+
+#### 3.2. Auditoria antes de uma linha de código
+
+Nada foi ligado antes de mapear, para cada domínio: o que ele retorna,
+em que direção, o que pode ser `None`, com qual limiar ele *retém* a
+própria nota, se expõe bloqueadores, se expõe avisos, se expõe status,
+e **qual é o nome próprio da métrica de evidência dele**.
+
+| Domínio | Nota | Pode ser `None`? | Limiar de retenção | Métrica de evidência (nome próprio) |
+|---|---|---|---|---|
+| Tendência | `provisional_trend_score` | sim (<2 observações) | estrutural | `observation_count` (**não tem confiança**) |
+| Demanda | `demand_score` | sim | — | `confidence_score` |
+| Concorrência | `competition_score` | sim | — | `confidence_score` (teto 55) |
+| Margem | `margin_score` | sim | completude de custos ≥ 50% | `cost_completeness_score` |
+| Fornecedor | `supplier_score` | sim | completude ≥ 35% | `evidence_completeness_score` |
+| Logística | `logistics_score` | sim | completude ≥ 40% | `evidence_completeness_score` |
+| Risco | `risk_score` | sim | completude ≥ 35% | `evidence_completeness_score` |
+
+Dois achados estruturais imediatos:
+
+1. **Toda nota de domínio pode ser `None`.** A Fase 1 exige sete floats
+   obrigatórios. Os dois contratos são incompatíveis -- e essa é a
+   razão de a Fase 11 **não** ter sido forçada dentro da API antiga.
+2. **Só Fornecedor tem bloqueador alcançável.** Logística e Risco têm
+   `_detect_blockers()` que retornam sempre `[]` de propósito (pontos
+   de extensão reservados).
+
+#### 3.3. Linhagem de evidência (o achado central)
+
+Rastreando a evidência bruta até o componente integrado:
+
+```
+UMA chamada ao Actor do Google Trends (Apify) -> TrendData
+  interest_over_time --> recent_average + direction
+                          |-> TrendMetrics.provisional_trend_score
+                          |-> Demand.trend_contribution   (peso 0.40)
+  related_*_queries     --> Demand.breadth_contribution   (peso 0.25)
+  interest_by_region    --> Demand.regional_contribution  (peso 0.20)
+  marketplace            --> Demand.marketplace_contribution (peso 0.15)
+                             = SEMPRE None
+```
+
+Como `marketplace_contribution` está permanentemente desativado (uma
+contagem limitada por página não é sinal de demanda),
+**100% do Demand Score de hoje é evidência do Google Trends** -- não
+85%, tudo. E `recent_average` + `direction` são *literalmente* os dois
+números que dominam o Trend Score.
+
+Classificação de **todas** as sobreposições encontradas:
+
+| Par | Classe | Decisão |
+|---|---|---|
+| Demanda ↔ Tendência | **4 — duplicada** | uma família de evidência, um representante com peso |
+| Logística ↔ Risco | 3 — correlacionada | ambos mantidos: Logística **não pontua** as taxas observadas compartilhadas |
+| Fornecedor ↔ Risco | 2 — distinta | ambos com peso integral |
+| Fornecedor ↔ Margem | 2 — distinta | `unit_cost` é evidência não pontuada no Fornecedor |
+| Concorrência ↔ Risco | 1 — independente | concentração *deles* vs. dependência *nossa* |
+| Fornecedor ↔ Logística | 2 — distinta | perna de sourcing vs. perna de última milha |
+
+O caso Logística ↔ Risco merece destaque porque é o tipo de coisa que
+*parece* um bug e não é: `observed_damage_rate` e
+`observed_return_rate` existem nos **dois** modelos de entrada. Mas em
+Logística eles alimentam apenas avisos/status/completude -- **nenhuma**
+das cinco dimensões pontuadas -- enquanto em Risco eles alimentam
+`operational_history_risk_score`. Ou seja: o mesmo número bruto move
+**exatamente uma** nota. Está correto hoje, e está a um refactor de
+deixar de estar -- por isso virou teste de regressão explícito.
+
+#### 3.4. Famílias de evidência (a solução escolhida)
+
+Das alternativas avaliadas (remover o componente duplicado; mudar a
+composição a montante; manter os dois com peso reduzido; criar um
+modelo canônico de família; preservar os pesos antigos só no modo
+legado), a escolha foi **família + representante único**:
+
+```
+família "search-interest": UM peso de 0.30 para os dois membros
+
+precedência de representante: Demanda, depois Tendência
+```
+
+- **Demanda é preferida** porque consome a família de forma mais
+  completa (nível de interesse, direção, amplitude de termos
+  relacionados, dispersão regional); Tendência lê só a série temporal.
+- **Tendência é o fallback**, para que fornecer só um resultado de
+  Tendência não deixe o peso da família sem ser ganho.
+- O membro não eleito **continua no relatório** (nota, direção,
+  proveniência) com peso efetivo 0 e um `overlap_policy` explícito.
+
+A regra é declarada como **dado**, não como condicional espalhado no
+motor -- `EvidenceFamilyPolicy` em `src/opportunity_models.py`, com
+`COMPONENT_FAMILIES` **derivado** de `EVIDENCE_FAMILIES` em vez de
+mantido em paralelo à mão. Isso importa: uma regra que vive só como
+`if` dentro de uma função fica invisível para o próximo refactor. Como
+objeto declarado com testes próprios, reintroduzir Tendência como voto
+independente exige apagar uma política explícita e quebrar testes que
+dizem por quê.
+
+#### 3.4.1. Pesos legados != pesos integrados (a decisão de hardening)
+
+Este foi o ponto corrigido no último passe antes do commit, e ele
+**reverte** um rascunho anterior desta própria fase.
+
+O rascunho dava 0.30 + 0.20 = **0.50** à família, argumentando que
+"remover a contagem dupla não deveria também mexer no julgamento de
+negócio". **Esse argumento estava errado**, e vale entender por quê,
+porque é um erro sutil e convincente.
+
+O 0.50 do modelo legado estava dividido entre o que a Fase 1
+**acreditava** serem duas fontes independentes de evidência. Quando a
+auditoria provou que são **uma** família alimentada por **uma** chamada
+de provedor, preservar o 0.50 não preserva o julgamento original -- ele
+converte silenciosamente
+
+> "metade da nota vem de dois sinais de demanda independentes"
+
+em
+
+> "metade da nota vem de uma única chamada do Google Trends".
+
+São afirmações **materialmente diferentes**, e a segunda é muito mais
+concentrada do que a Fase 1 jamais pretendeu. Preservar o número
+preservava a aparência da decisão antiga enquanto mudava o seu
+significado.
+
+```
+pesos de negócio legados  !=  pesos integrados justificados por evidência
+```
+
+Então o `integrated-v1` **re-deriva** cada peso a partir do **valor
+marginal de informação** que aquela família de evidência realmente
+contribui, dado o que o projeto consegue observar hoje:
+
+| Peso | Justificativa |
+|---|---|
+| search-interest **0.30** | Evidência real de interesse, mas hoje dependente de uma única família de evidência (Google Trends / Apify), e interesse de busca **não é** venda observada no marketplace. Material, não dominante. |
+| concorrência **0.15** | Mantém influência real sobre a atratividade sem dominar a viabilidade comercial. |
+| margem **0.20** | Unit economics é diretamente material para a viabilidade financeira. Deliberadamente **acima** da família: um produto que ninguém procura é uma ideia fraca, mas um produto que dá prejuízo por unidade não é uma oportunidade, ponto. |
+| fornecedor **0.12** | Capacidade de sourcing determina execução de forma material e merece mais que um papel marginal. |
+| logística **0.08** | Movimentação e entrega importam, mas ficam abaixo de Margem e Fornecedor. |
+| risco **0.15** | Downside, concentração e instabilidade merecem influência material -- **triplicado** em relação ao 0.05 legado, que era pequeno demais para uma dimensão que o projeto trata como evidência obrigatória. |
+
+Soma: **1.00**. Todos são **heurísticas de negócio provisórias**
+escolhidas a partir de raciocínio documentado, não calibradas contra
+resultados reais. Dados de resultado podem justificar recalibrar cada
+um deles -- isso seria uma nova versão de modelo, não uma edição desta.
+
+O modelo legado (`src/scoring.py`) ficou **intocado**. Coincidência
+digna de nota: Concorrência vale 0.15 nos dois modelos, e o peso da
+família (0.30) é igual ao peso legado de Demanda sozinha (0.30). São
+coincidências numéricas, **não** derivações -- e há testes que dizem
+isso, para ninguém "simplificar" um na direção do outro depois.
+
+#### 3.5. Direção e inversão exatamente uma vez
+
+```python
+positiva:  opportunity_score = raw_score
+negativa:  opportunity_score = 100 - raw_score
+```
+
+`raw_score` é sempre a nota do domínio na direção do domínio;
+`opportunity_score` é reorientada para "maior é sempre melhor". A
+inversão acontece **só** em `to_opportunity_oriented()`, chamada pelos
+adaptadores -- nunca no motor, nunca dentro de um domínio.
+
+Por que não há inversão dupla: `risk_analysis.py` foi escrito sem
+nenhuma inversão interna (as tabelas de âncoras já crescem com a
+gravidade), e `logistics_analysis.py` calcula "facilidade" direto
+(maior = melhor). Então não há nada para desfazer a montante. O teste
+`test_no_double_inversion` registra isso: inverter duas vezes devolve o
+valor original, o que é precisamente o bug.
+
+#### 3.6. Ausente continua ausente
+
+Um domínio que reteve a nota vira `available=False`, `raw_score=None`,
+`opportunity_score=None`, `weighted_contribution=None` e um
+`withheld_reason` específico. Nunca 0, nunca 50, nunca "seguro", nunca
+"médio". O peso simplesmente **não é ganho**.
+
+#### 3.7. Falsa segurança: o problema e as duas proteções
+
+O problema, com números:
+
+```
+tudo conhecido vale 90, Risco (peso 0.15) desconhecido
+  renormalizar só sobre o disponível  -> 90.00
+  se Risco fosse conhecido em 60      -> 0.85·90 + 0.15·40 = 82.50
+```
+
+A nota **sobe** porque não sabemos nada sobre o risco.
+
+**Proteção 1 -- o portão (principal).** Concorrência e Risco são
+requisitos **comerciais**: faltar um força
+`readiness = INCOMPLETE_EVIDENCE`, `publishable = False` e
+classificação retida. Risco desconhecido **nunca** recebe o rótulo
+"Strong opportunity", não importa a aritmética.
+
+**Proteção 2 -- o teto (numérico).**
+
+```
+teto = (Σ wᵢ·oᵢ + Σ w_neg_ausente · 50) / (Σ wᵢ + Σ w_neg_ausente)
+nota = min(parcial_renormalizada, teto)
+```
+
+Isso **não é** `None -> 50`: o componente permanece `available=False`
+com `raw_score=None`, nenhuma contribuição é fabricada, e nada afirma
+que o risco é 50. O teto restringe **somente o agregado**, para que a
+ignorância não pague. É sinalizado por
+`false_safety_ceiling_applied` e por uma nota no resultado.
+
+A assimetria é intencional: por ser um `min()`, o teto só **abaixa**
+uma nota inflada. Quando a evidência conhecida já é ruim (parcial < 50)
+o teto não aperta, então evidência de risco ausente também não é
+convertida em má notícia inventada.
+
+**Limitação honesta, documentada em vez de escondida:** um teto neutro
+é o limite mais apertado possível *sem fabricar evidência*. Ele não
+consegue colocar a nota exatamente onde um risco conhecido e ruim a
+colocaria -- fazer isso exigiria inventar um valor ruim específico que
+não temos. É o **portão**, não o teto, que garante que tal resultado
+nunca seja apresentado como validado.
+
+**Re-verificação após o hardening de pesos.** Mudar um peso negativo
+muda a aritmética do teto, então a fórmula foi re-conferida em vez de
+assumida. Concorrência e Risco passaram a valer 0.15 cada (0.30
+somados, contra 0.20 no rascunho), e o resultado é que o teto
+**aperta mais**:
+
+```
+tudo em 90, Risco ausente:   rascunho (0.05) -> 88.00
+                              atual   (0.15) -> 84.00
+tudo em 90, Conc. e Risco ausentes (0.30)     -> 78.00
+```
+
+A mesma fórmula ficou estritamente **mais protetora** sem uma linha de
+mudança -- mas isso era uma hipótese a verificar, não uma certeza: se
+os pesos negativos tivessem *caído*, o teto teria afrouxado e a
+proteção precisaria ser repensada. Por isso virou item de checklist em
+`docs/MAINTENANCE.md` e teste explícito
+(`test_false_safety_guard_still_correct_under_hardened_weights`).
+
+#### 3.8. Atratividade comercial != prontidão operacional
+
+A segunda decisão de hardening. Uma versão anterior desta fase
+classificava os componentes em "críticos" (demanda, concorrência,
+margem, risco) e "não críticos" (fornecedor, logística). Isso parecia
+razoável -- e deixava passar um resultado inaceitável:
+
+```
+Demanda     = forte
+Concorrência = aceitável
+Margem      = forte
+Risco       = baixo
+
+Fornecedor  = None
+Logística   = None
+
+-> READY, "Strong opportunity"
+```
+
+Um negócio pode parecer fantástico no papel -- muito interesse de
+clientes, concorrência aceitável, margem boa, risco administrável. Mas
+se **ninguém verificou** se um fornecedor consegue realmente entregar o
+item, ou se ele pode ser enviado de forma confiável, a oportunidade é
+**comercialmente atraente e operacionalmente não validada**. São duas
+afirmações diferentes, e o comitê de investimento pode mostrar a nota
+analítica, mas não deveria estampar "totalmente aprovado" antes de os
+especialistas operacionais entregarem os relatórios deles.
+
+Então os sete componentes foram particionados em **duas camadas de
+validação**, e cada componente é obrigatório **para a sua própria
+camada**:
+
+| Camada | Peso | Membros | Pergunta |
+|---|---|---|---|
+| comercial | 0.80 | família search-interest, concorrência, margem, risco | "o caso de mercado/econômico está validado?" |
+| operacional | 0.20 | fornecedor, logística | "a execução está validada?" |
+
+Uma família é satisfeita quando **qualquer** membro está disponível
+(é para isso que existe o representante); um componente sem família só
+é satisfeito por si mesmo.
+
+`commercial_validation_complete` / `operational_validation_complete` e
+as coberturas correspondentes (`commercial_coverage` /
+`operational_coverage`) são reportados **separadamente**, para que as
+duas perguntas possam ser respondidas de forma independente.
+
+Note que "crítico" desapareceu do vocabulário: não havia componente
+dispensável, havia componentes respondendo a **perguntas diferentes**.
+Chamar fornecedor e logística de "não críticos" era o erro de modelagem
+-- eles não são menos importantes, eles validam outra coisa.
+
+#### 3.9. Prontidão (readiness) -- quatro estados, não dois
+
+| Readiness | Significado |
+|---|---|
+| `READY` | as duas camadas completas, sem bloqueador → classificação final emitida |
+| `OPERATIONALLY_UNVALIDATED` | comercial completa, mas falta Fornecedor e/ou Logística → nota analítica mostrada, classificação final retida |
+| `INCOMPLETE_EVIDENCE` | falta um requisito **comercial** → o próprio caso de negócio não pode ser avaliado; nota analítica mostrada, classificação retida |
+| `BLOCKED` | um domínio reportou bloqueador → verificado **primeiro**; nota mostrada, recomendação retida |
+
+Precedência estrita:
+
+```
+BLOCKED > INCOMPLETE_EVIDENCE > OPERATIONALLY_UNVALIDATED > READY
+```
+
+Comercial vence operacional porque um caso de negócio **inavaliável**
+torna a pergunta de execução irrelevante: não faz sentido mandar
+verificar fornecedor para um produto cuja margem ninguém conhece.
+
+`OPERATIONALLY_UNVALIDATED` **não** foi colapsado dentro de
+`INCOMPLETE_EVIDENCE` de propósito. Os dois respondem perguntas
+diferentes, e juntá-los jogaria fora a coisa mais acionável que o
+sistema consegue dizer: *"o caso comercial se sustenta -- vá verificar
+sourcing e envio."* Um "faltam dados" genérico manda o usuário procurar
+o quê, exatamente?
+
+Apesar da inevitável sobreposição de palavra em
+"OPERATIONALLY_UNVALIDATED", esse vocabulário continua distinto do
+`operational_status` de Fornecedor/Logística e do `risk_status` de
+Risco: aqui é uma afirmação de **cobertura de evidência no nível da
+oportunidade**, nunca o veredito de um domínio.
+
+#### 3.9.1. Classificação final só em READY
+
+A nota analítica é calculada e mostrada sempre que existe qualquer
+evidência ponderada -- esconder aritmética útil seria um outro tipo de
+desonestidade. Mas as faixas legadas ("Strong opportunity", ...) só são
+emitidas como **classificação final** quando `readiness == READY`.
+
+Fora de READY, `classification` é `None` e `withheld_reason` explica o
+motivo. Só para `OPERATIONALLY_UNVALIDATED` -- o único estado não-READY
+em que o caso comercial **está** totalmente avaliado -- existe uma
+faixa explicitamente não-final em `analytical_band_non_final`, para o
+relatório poder dizer "o caso comercial pontua na faixa Strong, mas a
+execução não está validada" sem nunca estampar aprovação.
+
+Ela é deliberadamente **não** preenchida para `INCOMPLETE_EVIDENCE` (o
+caso de negócio não é avaliável, então uma faixa enganaria) nem para
+`BLOCKED` (a oportunidade é discutível enquanto o bloqueador existe).
+
+#### 3.10. Bloqueadores nunca somem dentro de uma média
+
+Um produto pode ter Demanda 95 e Margem 90 e ainda ser **impossível de
+comprar**. Bloqueadores são verificados antes da completude de
+evidência, aparecem namespaced pelo domínio que os encontrou, e
+derrubam a publicabilidade. A aritmética continua visível -- o que é
+retido é a **recomendação**, não a nota. No Cenário C do demo isso
+aparece literal: `supplier 65.50`, `source status: BLOCKED`,
+`Classification: WITHHELD`.
+
+#### 3.11. Cobertura não é confiança
+
+`component_coverage = peso conhecido / peso configurado total`.
+Responde **apenas** "para quanto do peso temos *alguma* evidência".
+
+Não é confiança (quão confiável é essa evidência), não é completude
+(quanto do conjunto de campos de um domínio está preenchido), não é
+acurácia. 85% de cobertura feita de quatro domínios magros e de baixa
+confiança não é evidência melhor que 60% de três bem preenchidos.
+
+E é por isso que `EvidenceProfile` guarda cada métrica **com o nome
+próprio dela** e **sem média**: `demand_confidence`,
+`competition_confidence`, `margin_cost_completeness`,
+`supplier_/logistics_/risk_evidence_completeness`, e
+`trend_observation_count` (Tendência não tem métrica de evidência, e
+nenhuma foi inventada). Tirar a média de um número com teto de
+independência de fontes com uma contagem de categorias de custo
+produziria um número sem significado definível.
+
+#### 3.12. Política de arredondamento
+
+O motor integrado classifica o valor **exato, não arredondado**: 79.995
+aparece como `80.00` mas não pode virar "Strong opportunity". O legado
+`score_opportunity()` sempre classificou o total já arredondado a 2
+casas, e **foi deixado exatamente como estava** -- não é bug provado, e
+mudar moveria resultados já registrados. As duas condutas estão fixadas
+em teste para que a divergência continue deliberada.
+
+#### 3.13. Compatibilidade retroativa
+
+`src/scoring.py` e `src/models.py` não foram tocados.
+`tests/test_legacy_compatibility.py` fixa: os sete pesos legados, a
+soma 1.0, as dimensões negativas, os campos de `ComponentScores`, o
+resultado de `score_opportunity()`, o fato de `ComponentScores` ainda
+**rejeitar** valores faltantes (`TypeError`), as faixas de
+classificação, o fluxo manual do CLI, e que as duas tabelas de peso são
+objetos separados. Semântica de dados ausentes pertence à camada
+integrada; forçá-la dentro de `ComponentScores` desestabilizaria o
+contrato das Fases 1/2.
+
+### 4. Conexão entre o simples e o técnico, com números
+
+O comitê de investimento, com o Cenário A do demo (todos os sete
+relatórios entregues):
+
+| Especialista | Relatório (cru) | Reorientado | Peso | Contribuição | Camada |
+|---|---|---|---|---|---|
+| Demanda | 69.00 | 69.00 | 0.30 | 20.70 | comercial |
+| Tendência | 81.36 | 81.36 | — | **não contado** (mesma evidência) | comercial |
+| Concorrência | 40.62 | **59.38** | 0.15 | 8.91 | comercial |
+| Margem | 89.13 | 89.13 | 0.20 | 17.83 | comercial |
+| Fornecedor | 93.78 | 93.78 | 0.12 | 11.25 | operacional |
+| Logística | 97.00 | 97.00 | 0.08 | 7.76 | operacional |
+| Risco | 20.88 | **79.12** | 0.15 | 11.87 | comercial |
+| | | | | **78.32** | |
+
+```
+Readiness: READY
+Commercial validation: complete (coverage 100.00%)
+Operational validation: complete (coverage 100.00%)
+Final Classification: Worth deeper investigation
+```
+
+Duas inversões aconteceram, cada uma uma vez: concorrência 40.62 → 59.38
+("pouca concorrência é bom") e risco 20.88 → 79.12 ("pouco risco é
+bom"). Tendência tem nota **alta** (81.36) e contribui **zero** --
+porque a evidência dela já está dentro dos 20.70 da Demanda.
+
+Repare também que `demand confidence` nesse cenário é **19.62**: a nota
+de Demanda é 69, mas a evidência por trás dela é fina (uma só família
+de fontes, 6 observações). Nota e confiança são números diferentes
+respondendo perguntas diferentes, e o relatório mostra os dois.
+
+**Cenário B** muda só isto: Fornecedor e Logística deixam de existir.
+Nada no caso comercial mudou.
+
+```
+Opportunity Score: 74.13 (PARTIAL) (analytical, NOT final)
+Component coverage: 80.00%
+Commercial validation: complete     (coverage 100.00%)
+Operational validation: INCOMPLETE  (coverage 0.00%)
+Readiness: OPERATIONALLY_UNVALIDATED
+Final Classification: WITHHELD
+Analytical band (NON-FINAL, commercial case only): Worth deeper investigation
+Missing OPERATIONAL requirements: supplier, logistics
+```
+
+É o cenário que o rascunho anterior desta fase marcava como READY. A
+nota comercial é boa, está visível, e **não vira recomendação** --
+porque ninguém confirmou que o produto pode ser comprado e enviado.
+
+**Cenário C** muda outra coisa: Margem passa a conhecer 1 de 8
+categorias de custo, então a Margem retém a própria nota.
+
+```
+Opportunity Score: 75.61 (PARTIAL) (analytical, NOT final)
+Component coverage: 80.00%
+Commercial validation: INCOMPLETE   (coverage 75.00%)
+Operational validation: complete    (coverage 100.00%)
+Readiness: INCOMPLETE_EVIDENCE
+Final Classification: WITHHELD
+Missing COMMERCIAL requirements: margin
+```
+
+Compare B e C: a **cobertura total é a mesma (80%)**, e os dois retêm a
+classificação. Mas são situações diferentes, e os dois estados dizem
+qual: em B o caso de negócio está fechado e falta execução; em C o
+próprio caso de negócio não é avaliável. Nenhuma faixa analítica é
+oferecida em C, justamente porque não há caso comercial completo para
+descrever.
+
+**Cenário D**: tudo disponível, as duas camadas completas -- e o
+fornecedor tem estoque conhecido abaixo do próprio pedido mínimo.
+
+```
+Opportunity Score: 74.92 (analytical, NOT final)
+Commercial validation: complete     Operational validation: complete
+Readiness: BLOCKED
+Final Classification: WITHHELD
+BLOCKERS (never averaged into the score):
+  Supplier Analysis (Phase 8):
+    - stock_quantity (12) is below moq_units (50) ...
+```
+
+Nota 74.92, as duas validações completas, e ainda assim nenhuma
+recomendação: é a precedência do bloqueador funcionando em cima de tudo.
+
+E o teto de falsa segurança, com números concretos: tudo em 90 e Risco
+desconhecido daria **90.00** por renormalização ingênua; o teto baixa
+para **84.00** (= (0.85·90 + 0.15·50) / 1.00), e o portão retém a
+classificação de todo modo. Note que o rascunho com Risco em 0.05
+capava em 88.00 -- subir o peso do Risco para 0.15 tornou a mesma
+fórmula **mais protetora**, sem mudar uma linha dela.
+
+### 5. O que implementamos na prática
+
+- `src/opportunity_models.py` — contrato canônico:
+  `EvidenceFamilyPolicy`, `OpportunityComponent`, `EvidenceProfile`,
+  `OpportunityAnalysisResult`, a tabela `INTEGRATED_WEIGHTS`, as duas
+  camadas de validação, o vocabulário de prontidão,
+  `to_opportunity_oriented()`, `classify_exact()`. Importa **só**
+  `dataclasses`.
+- `src/opportunity_integration.py` — sete adaptadores puros
+  (`from_demand_result`, `from_trend_metrics`, ...), a eleição de
+  representante de família, o agregador com teto de falsa segurança, e
+  `compose_opportunity()`. Importa **só** `src.opportunity_models`.
+- `src/main.py` — opção `10. Integrated Opportunity Analysis`,
+  `format_opportunity_report()`, quatro cenários ilustrativos
+  rotulados (um por estado de prontidão).
+- `tests/test_opportunity_models.py`,
+  `tests/test_opportunity_integration.py`,
+  `tests/test_legacy_compatibility.py`, mais testes de CLI em
+  `tests/test_main.py`.
+
+Decisão de demo (seção 29 do briefing): a opção 10 **não pede entrada
+nenhuma**. Em vez de obrigar a redigitar todos os campos das opções
+3-9, ela roda os motores **reais** sobre quatro cenários explicitamente
+rotulados como ilustrativos -- um por estado de prontidão (READY /
+OPERATIONALLY_UNVALIDATED / INCOMPLETE_EVIDENCE / BLOCKED), com um banner dizendo que os números são
+exemplos definidos em `src/main.py` -- não buscados, não observados,
+não de um produto real -- e que coleta automática pertence a um
+Orquestrador futuro. Um teste
+(`test_integrated_demo_does_not_claim_automated_end_to_end_analysis`)
+impede que esse texto regrida para "analisando automaticamente...".
+
+### 6. Termos técnicos aprendidos
+
+- **Composition vs. orchestration (composição vs. orquestração)** --
+  composição combina resultados que já existem; orquestração vai
+  buscá-los, decide a ordem e lida com falhas. Misturar as duas produz
+  um sistema que finge ser automático.
+- **Adapter pattern (padrão adaptador)** -- uma função minúscula por
+  domínio que **traduz** um formato para o contrato canônico. O motor
+  passa a conhecer um formato, não sete. Adicionar um oitavo domínio é
+  escrever um adaptador, não editar aritmética.
+- **Canonical model (modelo canônico)** -- a forma única e intermediária
+  pela qual todo mundo conversa, para que N formatos não virem N²
+  conversões.
+- **Score direction / inversion (direção e inversão)** -- reorientar uma
+  métrica "maior é pior" para "maior é melhor". Fazer isso **uma** vez,
+  num lugar só.
+- **Double inversion (inversão dupla)** -- inverter duas vezes devolve o
+  original, silenciosamente. Por isso a inversão vive numa função só.
+- **Weighted contribution (contribuição ponderada)** --
+  `nota_reorientada × peso`. Expor isso por componente é o que torna a
+  nota auditável em vez de mágica.
+- **Evidence lineage (linhagem de evidência)** -- o caminho
+  `provedor bruto -> métrica -> nota de domínio -> componente
+  integrado`. Sem rastrear isso, não se sabe o que se está somando.
+- **Correlated evidence (evidência correlacionada)** -- dois sinais que
+  variam juntos por derivarem da mesma origem. Não são confirmação
+  independente.
+- **Double counting (contagem dupla)** -- premiar a mesma evidência
+  mais de uma vez. O erro central que esta fase existe para impedir.
+- **Evidence family (família de evidência)** -- um conjunto de
+  componentes que compartilham a mesma origem, recebem **um** peso
+  combinado e elegem **um** representante.
+- **Missing-data bias / false safety (viés de dado ausente / falsa
+  segurança)** -- quando ignorar uma dimensão *negativa* desconhecida
+  **melhora** a nota. Ignorância virando boa notícia.
+- **Renormalization (renormalização)** -- redistribuir pesos sobre o que
+  está disponível. Correto para dimensões positivas; perigoso para
+  negativas, sem proteção.
+- **Marginal information value (valor marginal de informação)** --
+  quanto uma família de evidência realmente acrescenta ao julgamento,
+  dado tudo o que já se sabe. É a base dos pesos do `integrated-v1`, em
+  vez de herdar números de um modelo que acreditava em independência
+  que não existia.
+- **Evidence independence (independência de evidência)** -- duas fontes
+  são independentes quando uma pode confirmar a outra. Dois recortes da
+  mesma chamada de API não são.
+- **Commercial attractiveness (atratividade comercial)** -- o caso de
+  mercado e de economia unitária: dá para vender, e vale a pena?
+- **Operational readiness (prontidão operacional)** -- dá para
+  **executar**: consigo comprar e consigo entregar?
+- **Commercial / operational validation** -- se cada uma dessas camadas
+  tem toda a evidência necessária. São dois booleanos separados porque
+  são duas perguntas separadas.
+- **Validation layer (camada de validação)** -- a partição dos
+  componentes pela pergunta que respondem, em vez de por "importância".
+- **Analytical score vs. final recommendation** -- a aritmética sobre o
+  que se sabe, versus um veredito de negócio. A primeira existe quase
+  sempre; o segundo só em `READY`.
+- **Non-final band (faixa não-final)** -- uma faixa de classificação
+  que descreve **só** o caso comercial, exposta apenas em
+  `OPERATIONALLY_UNVALIDATED` e sempre rotulada como não-final.
+- **Readiness precedence (precedência de prontidão)** -- a ordem em que
+  os estados são testados (`BLOCKED` > `INCOMPLETE_EVIDENCE` >
+  `OPERATIONALLY_UNVALIDATED` > `READY`), para que o problema mais
+  fundamental sempre ganhe.
+- **Blocker precedence (precedência de bloqueador)** -- um bloqueador
+  real vence qualquer quantidade de evidência boa.
+- **Component coverage (cobertura de componentes)** -- quanto do peso
+  tem alguma evidência. **Não** é confiança, completude ou acurácia.
+- **Confidence vs. completeness vs. coverage** -- três perguntas
+  distintas: *quão confiável é*, *quanto está preenchido*, *quanto do
+  peso foi ganho*. Nunca intercambiáveis, nunca somadas.
+- **Partial score (nota parcial)** -- uma nota calculada sobre menos que
+  o peso total, rotulada como tal.
+- **Publishability / readiness (publicabilidade / prontidão)** -- se o
+  resultado tem base para virar recomendação, separado de qual é a nota.
+- **Blocker propagation (propagação de bloqueador)** -- garantir que um
+  fato desqualificante atravesse a agregação em vez de se diluir numa
+  média.
+- **Provenance (proveniência)** -- de onde cada número veio, preservado
+  junto dele.
+- **Model version (versão de modelo)** -- `legacy-v1` / `integrated-v1`.
+  É o que mantém um resultado armazenado interpretável depois que os
+  pesos mudarem.
+- **Rounding policy (política de arredondamento)** -- decidir se a
+  classificação usa o valor exato ou o exibido, e testar as fronteiras.
+- **Backwards compatibility (compatibilidade retroativa)** -- a API
+  antiga continua se comportando igual; a nova vive ao lado.
+- **Deterministic composition (composição determinística)** -- mesma
+  entrada, mesma saída, sempre. Sem I/O, sem relógio, sem aleatoriedade.
+- **Provisional heuristic vs. calibrated probability (heurística
+  provisória vs. probabilidade calibrada)** -- 82 significa "esta
+  evidência, sob esta ponderação documentada, pontua 82 de 100". Nunca
+  "82% de chance" de nada.
+
+### 7. Comandos/ferramentas usados
+
+```bash
+python -m pytest -v
+pytest -v
+python -m src.main        # opção 10
+git diff
+git status
+```
+
+Para a auditoria de fronteira arquitetural, `ast` da biblioteca padrão
+em vez de busca por substring -- um import proibido não pode se
+esconder atrás de formatação, e uma menção dentro de docstring (que
+legitimamente cita módulos para documentar a ausência deles) não gera
+falso positivo:
+
+```python
+tree = ast.parse(open(module.__file__, encoding="utf-8").read())
+```
+
+### 8. Como explicar isso para um recrutador ou cliente
+
+> "Construí uma camada determinística de composição de oportunidade que
+> **separa atratividade comercial de prontidão operacional**, normaliza
+> as saídas de motores de análise independentes, impede que evidência
+> correlacionada seja contada duas vezes, preserva a semântica de
+> evidência e a proveniência específicas de cada domínio, e **retém
+> recomendações finais quando a validação crítica ou operacional está
+> incompleta**."
+
+Cláusula por cláusula:
+
+- **"camada determinística de composição"** -- funções puras, sem I/O,
+  sem relógio, sem aleatoriedade: a mesma entrada sempre produz a mesma
+  saída, o que torna o resultado testável e auditável. Composição, não
+  orquestração: ela recebe resultados, não vai buscá-los.
+- **"separa atratividade comercial de prontidão operacional"** -- as
+  perguntas "o mercado e a economia unitária se sustentam?" e "dá para
+  comprar e entregar isso?" são respondidas por camadas separadas, com
+  booleanos e coberturas próprios. Um produto pode ser comercialmente
+  atraente e operacionalmente não validado, e o sistema diz exatamente
+  isso em vez de escolher entre "aprovado" e "faltam dados".
+- **"normaliza as saídas de motores de análise independentes"** -- sete
+  módulos (Tendência, Demanda, Concorrência, Margem, Fornecedor,
+  Logística, Risco), cada um com uma responsabilidade e nenhum
+  importando o outro, são traduzidos por um adaptador pequeno cada para
+  um único contrato canônico (`OpportunityComponent`). O agregador
+  conhece um formato, não sete; acrescentar um domínio é escrever um
+  adaptador, não mexer na aritmética.
+- **"impede que evidência correlacionada seja contada duas vezes"** --
+  rastreei a linhagem e descobri que o Demand Score é inteiramente
+  derivado da mesma chamada do Google Trends que produz o Trend Score.
+  Em vez de contá-los como votos independentes, eles formam uma família
+  de evidência declarada, com **um** peso e **um** representante
+  eleito; o membro não eleito continua visível para explicabilidade,
+  com contribuição zero. E os pesos integrados foram re-derivados do
+  valor marginal de informação em vez de herdados do modelo antigo --
+  manter o 0.50 legado teria convertido silenciosamente "metade da nota
+  vem de dois sinais independentes" em "metade vem de uma chamada de
+  API".
+- **"preserva a semântica de evidência ... de cada domínio"** -- a
+  confiança da Demanda, a completude de custos da Margem e a completude
+  de evidência do Fornecedor são **tipos diferentes** de métrica; ficam
+  com os nomes próprios e não são tiradas em média, porque a média não
+  teria significado definível.
+- **"e a proveniência"** -- cada componente carrega o domínio de
+  origem, a métrica de evidência, o status do domínio e, quando perdeu
+  a eleição de família, o motivo -- então sempre se pode responder "de
+  onde veio esse número, e por que este não contou?".
+- **"retém recomendações finais"** -- as faixas de classificação só são
+  emitidas como veredito final em `READY`. Fora disso o sistema ainda
+  mostra a nota analítica rotulada e as coberturas, mas retém a
+  classificação. Em `OPERATIONALLY_UNVALIDATED` ele oferece uma faixa
+  explicitamente **não-final** descrevendo só o caso comercial, para ser
+  útil sem estampar aprovação.
+- **"quando a validação crítica ou operacional está incompleta"** --
+  quatro estados de prontidão com precedência estrita
+  (`BLOCKED` > `INCOMPLETE_EVIDENCE` > `OPERATIONALLY_UNVALIDATED` >
+  `READY`). Um bloqueador real (ex.: estoque conhecido abaixo do pedido
+  mínimo) nunca se dilui numa média ponderada: aparece em destaque,
+  atribuído ao domínio que o encontrou, e derruba a publicabilidade
+  mesmo com nota alta. E dados ausentes permanecem ausentes -- nunca 0,
+  nunca 50, nunca "seguro" -- com proteção específica contra o caso em
+  que *remover* uma dimensão negativa desconhecida **aumentaria** a
+  nota.
+
+### 9. O que devo lembrar desta fase
+
+- **Antes de somar dois números, pergunte se eles vêm da mesma
+  fonte.** O achado mais importante desta fase não foi de código, foi
+  de rastreamento: Demanda e Tendência pareciam dois sinais e eram um
+  só, visto de dois ângulos. Nenhum teste de aritmética pegaria isso --
+  só traçar `provedor -> métrica -> nota -> componente` pega.
+- **Corrigir a contagem dupla e mudar o julgamento de negócio são duas
+  mudanças, não uma.** Dar à família o peso exato de 0.30 + 0.20
+  mantém a opinião original intacta e isola a correção. Se as duas
+  coisas mudassem juntas, ninguém saberia depois qual causou o quê.
+- **"Não sei" não é um valor; é a ausência de um valor.** `None -> 0`
+  afirma prejuízo. `None -> 50` afirma mediania. `None -> seguro`
+  afirma segurança. Os três inventam informação, e o terceiro é o mais
+  perigoso porque soa prudente.
+- **Dado ausente numa dimensão *negativa* é assimétrico.** Em dimensões
+  positivas, ignorar o desconhecido só gera incerteza sobre o potencial.
+  Em negativas, ignorar o desconhecido **melhora** a nota -- a
+  ignorância vira boa notícia. Essa assimetria não é óbvia e precisa de
+  proteção deliberada.
+- **Um portão e um peso resolvem problemas diferentes.** A tentação era
+  aumentar o peso do Risco para "refletir a importância". Peso expressa
+  contribuição marginal; portão expressa "não se publica sem isso".
+  Misturar os dois faz um número carregar duas responsabilidades.
+- **A resposta semanticamente válida pode ser inconveniente, e ainda
+  assim é a resposta.** Tornar Concorrência crítica significa que a
+  maioria dos resultados reais sai `WITHHELD` enquanto o Mercado Livre
+  está em 403. Isso é uma afirmação verdadeira sobre o que o projeto
+  sabe hoje -- não um defeito a contornar.
+- **Diga em voz alta o que a sua salvaguarda NÃO consegue fazer.** O
+  teto neutro é o limite mais apertado possível sem fabricar evidência,
+  e mesmo assim não reconstrói o que o dado ausente diria. Documentar
+  esse limite vale mais que fingir que a proteção é total -- é o portão
+  que dá a garantia real, não o teto.
+- **Uma nota retida é mais útil que uma nota confiante e errada.** A
+  Fase 11 ainda calcula e mostra a aritmética quando falta evidência
+  crítica ou há bloqueador; o que ela retém é o **veredito**. Separar
+  "o que a conta dá" de "o que isso recomenda" foi a decisão de design
+  mais reutilizável da fase.
+- **Preservar um número não é o mesmo que preservar uma decisão.** O
+  erro mais instrutivo desta fase foi meu: eu mantive o peso 0.50 da
+  família achando que estava sendo conservador com o julgamento de
+  negócio da Fase 1. Mas aquele 0.50 significava "dois sinais
+  independentes"; mantê-lo depois de provar que havia só um o
+  transformou em "metade da nota numa chamada de API". Quando a
+  *premissa* de um número muda, carregar o número adiante muda o que
+  ele afirma. Conservadorismo aparente, mudança real.
+- **"Não crítico" era a palavra errada para Fornecedor e Logística.** A
+  primeira versão os tratava como opcionais, e com isso um produto sem
+  nenhuma evidência de sourcing ou envio podia sair "Strong
+  opportunity". Eles não eram menos importantes -- eles validavam outra
+  **pergunta**. Trocar um eixo de importância ("crítico / não crítico")
+  por um eixo de propósito ("comercial / operacional") resolveu o bug e
+  deixou o modelo mais fácil de explicar.
+- **Dois estados distintos valem mais que um estado genérico.**
+  Colapsar `OPERATIONALLY_UNVALIDATED` em `INCOMPLETE_EVIDENCE` teria
+  simplificado o código e piorado o produto: "faltam dados" não diz ao
+  usuário o que buscar, enquanto "o caso comercial fecha, vá verificar
+  fornecedor e envio" diz exatamente.
+- **Fronteiras arquiteturais valem testes, não só comentários.** Checar
+  por AST que `opportunity_models` importa só `dataclasses` e que
+  `opportunity_integration` importa só o contrato transforma uma
+  intenção de design numa propriedade verificável -- e um `import`
+  acidental passa a quebrar o build em vez de apodrecer em silêncio.

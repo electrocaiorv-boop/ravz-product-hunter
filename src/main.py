@@ -41,12 +41,14 @@ from src.logistics_models import LogisticsInputs
 from src.margin_analysis import analyze_margin
 from src.margin_models import MarginInputs
 from src.models import ComponentScores, Product
+from src.opportunity_integration import compose_opportunity
 from src.risk_analysis import analyze_risk
 from src.risk_models import RiskInputs
 from src.scoring import score_opportunity
 from src.supplier_analysis import analyze_supplier
 from src.supplier_models import SupplierInputs
-from src.trend_analysis import analyze_trend
+from src.trend_analysis import analyze_interest_series, analyze_trend
+from src.trend_models import TrendPoint
 
 SCORE_FIELDS = (
     ("demand", "Demand score"),
@@ -89,10 +91,10 @@ def parse_non_empty_text(raw: str) -> str:
 
 
 def parse_menu_choice(raw: str) -> int:
-    """Validate that raw text is one of the main menu options (1-9)."""
+    """Validate that raw text is one of the main menu options (1-10)."""
     text = raw.strip()
-    if text not in {"1", "2", "3", "4", "5", "6", "7", "8", "9"}:
-        raise ValueError("choose 1, 2, 3, 4, 5, 6, 7, 8 or 9")
+    if text not in {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}:
+        raise ValueError("choose a number from 1 to 10")
     return int(text)
 
 
@@ -1343,6 +1345,369 @@ def run_risk_analysis(input_func=input) -> None:
     print(format_risk_report(inputs, result))
 
 
+INTEGRATED_DEMO_BANNER = (
+    "Phase 11 is the COMPOSITION layer: it combines domain-analysis results\n"
+    "that already exist into one explainable Opportunity analysis.\n"
+    "\n"
+    "It does NOT collect or fetch anything itself. There is no automated\n"
+    "end-to-end pipeline yet: Margin, Supplier, Logistics and Risk still\n"
+    "depend on manually supplied evidence, and Mercado Livre search (which\n"
+    "Competition needs) is unreachable in this environment.\n"
+    "\n"
+    "Rather than make you retype every field from options 3-9, this option\n"
+    "runs the REAL domain engines over three clearly-labelled ILLUSTRATIVE\n"
+    "scenarios, to show how the composition layer behaves. The numbers below\n"
+    "are example inputs defined in src/main.py -- they are NOT fetched data,\n"
+    "NOT observed data, and NOT about any real product.\n"
+    "\n"
+    "Collecting real domain inputs automatically belongs to a future\n"
+    "Orchestrator phase, which is deliberately not built yet."
+)
+
+
+def _demo_trend_metrics(values):
+    points = [
+        TrendPoint(date=f"w{index}", value=value, formatted_value=None)
+        for index, value in enumerate(values)
+    ]
+    return analyze_interest_series(points)
+
+
+def _demo_marketplace_items():
+    """Illustrative marketplace sample (NOT fetched -- see the banner)."""
+    return [
+        _DemoItem("MLB1", "Fone Bluetooth Esportivo", 119.90, 11, True, "new"),
+        _DemoItem("MLB2", "Fone Bluetooth Esportivo", 129.90, 12, True, "new"),
+        _DemoItem("MLB3", "Fone Bluetooth TWS Pro", 189.00, 13, False, "new"),
+        _DemoItem("MLB4", "Fone Bluetooth Basico", 79.90, 11, True, "new"),
+    ]
+
+
+class _DemoItem:
+    """Minimal stand-in for a mapped MercadoLivreItem, for the demo only.
+
+    Deliberately NOT built by calling the Mercado Livre integration: this
+    option performs no HTTP at all.
+    """
+
+    def __init__(self, item_id, title, price, seller_id, free_shipping, condition):
+        self.item_id = item_id
+        self.title = title
+        self.price = price
+        self.seller_id = seller_id
+        self.free_shipping = free_shipping
+        self.condition = condition
+
+
+def _demo_scenario_complete():
+    """Every domain reports a score: a publishable, READY result."""
+    metrics = _demo_trend_metrics([20, 22, 28, 35, 48, 62])
+    demand = analyze_demand(
+        build_demand_signals("fone bluetooth", DEFAULT_GEO, trend_metrics=metrics)
+    )
+    competition = analyze_competition(
+        build_competition_signals("fone bluetooth", marketplace_items=_demo_marketplace_items()),
+        requested_limit=4,
+    )
+    margin = analyze_margin(
+        MarginInputs(
+            product_name="Fone Bluetooth",
+            sale_price=Decimal("129.90"),
+            product_cost=Decimal("48.00"),
+            marketplace_fee_rate=Decimal("0.12"),
+            seller_shipping_cost=Decimal("14.00"),
+            packaging_cost=Decimal("2.50"),
+            tax_rate=Decimal("0.08"),
+            payment_cost=Decimal("1.20"),
+        )
+    )
+    supplier = analyze_supplier(
+        SupplierInputs(
+            product_name="Fone Bluetooth",
+            supplier_name="Distribuidora Exemplo",
+            unit_cost=Decimal("48.00"),
+            moq_units=5,
+            stock_quantity=600,
+            lead_time_days=9,
+            dropshipping_supported=True,
+            blind_shipping_supported=True,
+            tracking_available=True,
+            invoice_available=True,
+            business_verified=True,
+            contact_available=True,
+        )
+    )
+    logistics = analyze_logistics(
+        LogisticsInputs(
+            product_name="Fone Bluetooth",
+            weight_kg=Decimal("0.28"),
+            length_cm=Decimal("14"),
+            width_cm=Decimal("10"),
+            height_cm=Decimal("6"),
+            fragile=False,
+            hazardous=False,
+            perishable=False,
+            estimated_delivery_days=5,
+            tracking_available=True,
+            insurance_available=True,
+            supplier_fulfilled=True,
+        )
+    )
+    risk = analyze_risk(
+        RiskInputs(
+            product_name="Fone Bluetooth",
+            supplier_count=3,
+            primary_supplier_dependency_percent=Decimal("0.45"),
+            platform_dependency_percent=Decimal("0.85"),
+            historical_stockout_rate=Decimal("0.04"),
+            observed_return_rate=Decimal("0.05"),
+            regulatory_uncertainty=False,
+            brand_ip_uncertainty=False,
+            recall_history_present=False,
+        )
+    )
+    return (
+        "Scenario A -- complete evidence",
+        "Every domain supplied a score, so a recommendation can be issued.",
+        dict(
+            demand_result=demand,
+            trend_metrics=metrics,
+            competition_result=competition,
+            margin_result=margin,
+            supplier_result=supplier,
+            logistics_result=logistics,
+            risk_result=risk,
+        ),
+    )
+
+
+def _demo_scenario_operationally_unvalidated():
+    """Commercial case complete; nobody checked sourcing or shipping."""
+    scenario = _demo_scenario_complete()[2]
+    return (
+        "Scenario B -- commercially attractive, operationally UNVALIDATED",
+        "Demand, Competition, Margin and Risk are all available, so the\n"
+        "business case is fully evaluated. But no Supplier or Logistics\n"
+        "evidence exists, so nobody has confirmed the product can actually be\n"
+        "sourced and shipped. The analytical score stays visible; the final\n"
+        "recommendation is withheld.",
+        {**scenario, "supplier_result": None, "logistics_result": None},
+    )
+
+
+def _demo_scenario_missing_margin():
+    """Strong everything else, but Margin withheld its own score."""
+    scenario = _demo_scenario_complete()[2]
+    thin_margin = analyze_margin(
+        MarginInputs(
+            product_name="Fone Bluetooth",
+            sale_price=Decimal("129.90"),
+            product_cost=Decimal("48.00"),
+            marketplace_fee_rate=Decimal("0.12"),
+        )
+    )
+    return (
+        "Scenario C -- COMMERCIAL evidence incomplete (Margin withheld)",
+        "Only 1 of 8 cost categories is known, so Margin Analysis refuses to\n"
+        "emit a score. Margin is a COMMERCIAL requirement, so the business case\n"
+        "itself cannot be evaluated -- a more fundamental gap than unverified\n"
+        "execution, and therefore a different readiness state from Scenario B.",
+        {**scenario, "margin_result": thin_margin},
+    )
+
+
+def _demo_scenario_supplier_blocked():
+    """A genuine sourcing blocker that must not be averaged away."""
+    scenario = _demo_scenario_complete()[2]
+    blocked_supplier = analyze_supplier(
+        SupplierInputs(
+            product_name="Fone Bluetooth",
+            supplier_name="Distribuidora Exemplo",
+            unit_cost=Decimal("48.00"),
+            moq_units=50,
+            stock_quantity=12,
+            lead_time_days=9,
+            dropshipping_supported=True,
+            tracking_available=True,
+            invoice_available=True,
+            business_verified=True,
+        )
+    )
+    return (
+        "Scenario D -- Supplier BLOCKED (known stock below MOQ)",
+        "The supplier's known stock cannot fill its own minimum order. The\n"
+        "analytical score is still shown for transparency, but no\n"
+        "recommendation is issued while a hard blocker stands.",
+        {**scenario, "supplier_result": blocked_supplier},
+    )
+
+
+INTEGRATED_DEMO_SCENARIOS = (
+    _demo_scenario_complete,
+    _demo_scenario_operationally_unvalidated,
+    _demo_scenario_missing_margin,
+    _demo_scenario_supplier_blocked,
+)
+
+
+def _format_component_line(component) -> str:
+    """One component's contribution, or an explicit reason it has none."""
+    label = f"  {component.name:<12}"
+    if not component.available:
+        return (
+            f"{label} UNAVAILABLE (required for {component.validation_layer} "
+            f"validation) -- {component.withheld_reason}"
+        )
+    body = (
+        f" raw {component.raw_score:>6.2f} -> opportunity "
+        f"{component.opportunity_score:>6.2f}"
+    )
+    if not component.counted:
+        return (
+            f"{label}{body}  NOT COUNTED (correlated evidence -- "
+            f"folded into the {component.family} family)"
+        )
+    return (
+        f"{label}{body}  x weight {component.configured_weight:.2f}"
+        f" = {component.weighted_contribution:>6.2f}"
+        f"   [{component.validation_layer}]"
+    )
+
+
+def format_opportunity_report(result) -> str:
+    """Render an OpportunityAnalysisResult as a human-readable report."""
+    if result.opportunity_score is None:
+        score_text = "unavailable (no domain supplied a usable score)"
+    else:
+        # The score is a FINAL recommendation only when READY; everywhere
+        # else it is explicitly analytical.
+        qualifier = "" if result.publishable else " (analytical, NOT final)"
+        partial = " (PARTIAL)" if result.score_is_partial else ""
+        score_text = f"{result.opportunity_score:.2f}{partial}{qualifier}"
+
+    def _complete(flag):
+        return "complete" if flag else "INCOMPLETE"
+
+    lines = [
+        "=" * 70,
+        "INTEGRATED OPPORTUNITY ANALYSIS",
+        "=" * 70,
+        f"Product: {result.product_name}",
+        f"Scoring model: {result.model_version}",
+        "",
+        f"Opportunity Score: {score_text}",
+        f"Component coverage: {result.component_coverage:.2f}%"
+        "   (coverage is NOT confidence, completeness, or accuracy)",
+        "",
+        f"Commercial validation: {_complete(result.commercial_validation_complete)}"
+        f"   (coverage {result.commercial_coverage:.2f}%)"
+        "   -- is the market/economic case validated?",
+        f"Operational validation: {_complete(result.operational_validation_complete)}"
+        f"   (coverage {result.operational_coverage:.2f}%)"
+        "   -- is execution validated?",
+        "",
+        f"Readiness: {result.readiness}",
+        f"Publishable recommendation: {'yes' if result.publishable else 'no'}",
+        f"Final Classification: {result.classification or 'WITHHELD'}",
+    ]
+
+    if result.analytical_band_non_final:
+        lines.append(
+            f"Analytical band (NON-FINAL, commercial case only, not a "
+            f"recommendation): {result.analytical_band_non_final}"
+        )
+
+    if result.withheld_reason:
+        lines += ["", f"Why withheld: {result.withheld_reason}"]
+
+    lines += ["", "Component contributions:"]
+    for component in result.components:
+        lines.append(_format_component_line(component))
+        if component.source_status:
+            lines.append(f"               source status: {component.source_status}")
+
+    if result.missing_commercial_requirements:
+        lines += [
+            "",
+            "Missing COMMERCIAL requirements: "
+            + ", ".join(result.missing_commercial_requirements),
+        ]
+    if result.missing_operational_requirements:
+        lines += [
+            "",
+            "Missing OPERATIONAL requirements: "
+            + ", ".join(result.missing_operational_requirements),
+        ]
+
+    lines += ["", "Domain evidence profile (each metric under its own name):"]
+    profile = result.evidence_profile
+    for label, value in (
+        ("demand confidence", profile.demand_confidence),
+        ("competition confidence", profile.competition_confidence),
+        ("margin cost completeness", profile.margin_cost_completeness),
+        ("supplier evidence completeness", profile.supplier_evidence_completeness),
+        ("logistics evidence completeness", profile.logistics_evidence_completeness),
+        ("risk evidence completeness", profile.risk_evidence_completeness),
+        ("trend observation count", profile.trend_observation_count),
+        ("trend direction", profile.trend_direction),
+    ):
+        if value is None:
+            shown = "unavailable"
+        elif isinstance(value, float):
+            shown = f"{value:.2f}"
+        else:
+            shown = str(value)
+        lines.append(f"  {label}: {shown}")
+    lines.append(
+        "  (these are different KINDS of evidence metric and are deliberately"
+    )
+    lines.append("   neither renamed to one another nor averaged together)")
+
+    if result.domain_blockers:
+        lines += ["", "BLOCKERS (never averaged into the score):"]
+        for domain, items in sorted(result.domain_blockers.items()):
+            lines.append(f"  {domain}:")
+            for item in items:
+                lines.append(f"    - {item}")
+
+    if result.domain_warnings:
+        lines += ["", "Warnings:"]
+        for domain, items in sorted(result.domain_warnings.items()):
+            lines.append(f"  {domain}:")
+            for item in items:
+                lines.append(f"    - {item}")
+
+    if result.notes:
+        lines += ["", "Notes:"]
+        for note in result.notes:
+            lines.append(f"  - {note}")
+
+    lines.append("=" * 70)
+    return "\n".join(lines)
+
+
+def run_integrated_opportunity_analysis(input_func=input) -> None:
+    """Phase 11: demonstrate the integrated composition layer.
+
+    Takes no user input: see INTEGRATED_DEMO_BANNER for why this option
+    runs labelled illustrative scenarios instead of asking the user to
+    retype every field from options 3-9.
+    """
+    print("\nIntegrated Opportunity Analysis (Phase 11 -- composition layer)")
+    print("-" * 70)
+    print(INTEGRATED_DEMO_BANNER)
+    print("-" * 70)
+
+    for build_scenario in INTEGRATED_DEMO_SCENARIOS:
+        title, explanation, domain_results = build_scenario()
+        print()
+        print(f"### {title}")
+        print(explanation)
+        print()
+        result = compose_opportunity("Fone Bluetooth (ILLUSTRATIVE)", **domain_results)
+        print(format_opportunity_report(result))
+
+
 def main() -> None:
     print("RAVZ Product Hunter")
     print("1. Manual Product Analyzer")
@@ -1354,8 +1719,9 @@ def main() -> None:
     print("7. Analyze Supplier")
     print("8. Analyze Logistics")
     print("9. Analyze Risk")
+    print("10. Integrated Opportunity Analysis")
 
-    choice = ask("Choose an option (1-9): ", parse_menu_choice)
+    choice = ask("Choose an option (1-10): ", parse_menu_choice)
 
     if choice == 1:
         run_manual_analyzer()
@@ -1373,8 +1739,10 @@ def main() -> None:
         run_supplier_analysis()
     elif choice == 8:
         run_logistics_analysis()
-    else:
+    elif choice == 9:
         run_risk_analysis()
+    else:
+        run_integrated_opportunity_analysis()
 
 
 if __name__ == "__main__":

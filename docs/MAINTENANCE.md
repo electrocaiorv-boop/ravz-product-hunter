@@ -686,6 +686,232 @@ explicit user input.
 - [ ] Regression tests: full suite still passing
       (`python -m pytest -v` and `pytest -v`)
 
+### Integrated Opportunity composition (Phase 11)
+
+The composition layer is where a mistake is *least* visible and *most*
+damaging: a wrong direction, a silently defaulted `None`, or a
+re-introduced double count would change a recommendation without
+raising any error. Check these deliberately.
+
+- [ ] **Canonical component contract**: re-confirm
+      `OpportunityComponent` still carries `raw_score` (domain's own
+      direction) AND `opportunity_score` (re-oriented), and that nothing
+      outside `to_opportunity_oriented()` performs an inversion. Every
+      field must still earn its place -- delete any that stops
+      explaining something.
+- [ ] **Positive vs. negative direction**: re-confirm
+      `NEGATIVE_COMPONENTS == {"competition", "risk"}` and that Demand,
+      Trend, Margin, Supplier and Logistics are all positive. Logistics
+      is the easy one to get wrong: it computes "ease" (high = good) and
+      must NOT be inverted. Re-run
+      `test_positive_components_are_not_inverted`.
+- [ ] **Inversion count**: exactly once, in the adapter. Re-run
+      `test_no_double_inversion` and
+      `test_no_double_inversion_of_negative_components`. If a domain
+      ever starts emitting an already-inverted score, fix it in that
+      domain's adapter -- never by adding a second inversion.
+- [ ] **Integrated weight policy**: `SEARCH_INTEREST_FAMILY_WEIGHT`
+      (0.30) / competition (0.15) / margin (0.20) / supplier (0.12) /
+      logistics (0.08) / risk (0.15). `TOTAL_INTEGRATED_WEIGHT` must
+      stay exactly 1.0 counting each family once. Re-run
+      `test_integrated_distinct_weights_sum_to_exactly_one` and
+      `test_integrated_component_weights_are_the_documented_contract`.
+      Any change is a new model version, not an edit.
+- [ ] **Integrated weights must NOT be re-derived from legacy**: the
+      family is 0.30, NOT legacy's `Demand 0.30 + Trend 0.20 = 0.50`.
+      Preserving 0.50 would silently convert "half the score from two
+      independent signals" into "half the score from one Google Trends
+      call" -- a materially more concentrated claim than Phase 1
+      intended. Re-run
+      `test_search_interest_family_weight_is_not_the_legacy_sum` and
+      `test_integrated_family_weight_deliberately_differs_from_the_legacy_sum`.
+      Note Competition coincides at 0.15 in both tables; that is a
+      coincidence, not a derivation.
+- [ ] **Legacy weight policy**: `src/scoring.py`'s `WEIGHTS` must stay
+      the original seven-way Phase 1 table, and
+      `ComponentScores` must stay mandatory-seven. Re-run
+      `tests/test_legacy_compatibility.py` in full. Never "harmonize"
+      legacy with integrated.
+- [ ] **Evidence overlap map**: before adding, re-weighting, or
+      re-enabling ANY component, re-trace
+      `raw provider evidence -> domain metric -> domain score ->
+      integrated component` and check whether that evidence is already
+      consumed upstream. The map lives in `README.md` ("Phase 11 scope")
+      and `src/opportunity_models.py`'s docstring.
+- [ ] **Demand/Trend overlap**: still the project's one DUPLICATED
+      pair. Re-confirm Demand and Trend share one family weight with one
+      elected representative, and re-run
+      `test_trend_does_not_contribute_weight_when_demand_is_available`
+      and
+      `test_changing_only_the_trend_score_cannot_move_the_opportunity_score`.
+      **If `DemandAnalysis.marketplace_contribution` is ever re-enabled**
+      (i.e. a genuine total-result-count field gets mapped), the Demand
+      Score stops being 100% Google-Trends-derived -- revisit whether a
+      single family representative is still the right model, and record
+      the new reasoning rather than quietly changing the weights.
+- [ ] **Logistics/Risk overlap**: `observed_damage_rate` /
+      `observed_return_rate` exist in BOTH input models. Risk scores
+      them; Logistics must use them ONLY for warnings/status/evidence
+      completeness, never in one of its five scored dimensions. Re-run
+      `test_logistics_scored_dimensions_never_consume_observed_rates`.
+      If a future Logistics change scores them, the integrated weights
+      must change too, or the same observation votes twice.
+- [ ] **Other correlated evidence**: re-confirm
+      `SupplierInputs.unit_cost` stays UNSCORED in Supplier (otherwise
+      it double-counts Margin's `product_cost`), and that Supplier's
+      lead time (sourcing leg) is still distinct from Logistics'
+      `estimated_delivery_days` (last-mile leg).
+- [ ] **Commercial validation requirements**: search-interest family /
+      competition / margin / risk (0.80 of weight). Re-read the business
+      reasoning in `src/opportunity_models.py` before changing the set
+      -- each inclusion answers "could a recommendation be honest
+      without this?", not "is this convenient?". Re-run
+      `test_commercial_layer_is_the_business_case`.
+- [ ] **Operational validation requirements**: supplier / logistics
+      (0.20 of weight). These must NEVER go back to being simply
+      optional: a commercially attractive but operationally unverified
+      product must not be stampable as fully validated. Re-run
+      `test_supplier_and_logistics_are_operational_not_optional`,
+      `test_supplier_missing_is_operationally_unvalidated`,
+      `test_logistics_missing_is_operationally_unvalidated`, and
+      `test_both_operational_components_missing_is_not_ready`.
+- [ ] **Validation-layer partition**: every component belongs to
+      exactly one layer, and the layer weights must still partition the
+      total exactly (0.80 + 0.20 = 1.00). Re-run
+      `test_layer_weights_partition_the_total_exactly`. Both
+      `commercial_coverage` and `operational_coverage` must stay
+      reported separately so "is the economic case validated?" and "is
+      execution validated?" remain independently answerable.
+- [ ] **Component coverage**: still
+      `known weighted components / TOTAL_INTEGRATED_WEIGHT`, still
+      comparable regardless of which family member represents the
+      family, and still never labelled confidence/completeness/accuracy
+      anywhere in code, reports, or docs. Re-run
+      `test_coverage_is_never_called_confidence`.
+- [ ] **Missing-data policy**: `None` must never become 0, 50, "safe",
+      or "average". Re-run the parametrized
+      `test_none_never_becomes_zero_or_fifty`.
+- [ ] **False-safety guard**: re-confirm BOTH layers still exist -- the
+      commercial-requirement gate AND the neutral ceiling. **Re-verify
+      the arithmetic whenever a negative weight changes**: Competition
+      and Risk now carry 0.15 each (0.30 combined), so the ceiling binds
+      harder than the earlier 0.20 draft (the all-90s/no-risk example
+      caps at 84.0, not 88.0). Re-run
+      `test_false_safety_guard_still_correct_under_hardened_weights` and
+      `test_both_negative_dimensions_missing_caps_hardest`, plus
+      `test_missing_risk_does_not_create_false_safety`,
+      `test_missing_competition_does_not_create_false_safety`, and
+      `test_false_safety_ceiling_does_not_invent_bad_news_for_weak_evidence`.
+      The ceiling must stay a `min()` (it may only lower an inflated
+      score) and must never write a substitute value into a component.
+- [ ] **Readiness precedence**: strictly
+      `BLOCKED > INCOMPLETE_EVIDENCE > OPERATIONALLY_UNVALIDATED >
+      READY`. Commercial outranks operational because an unevaluable
+      business case makes execution moot. Re-run
+      `test_readiness_precedence_is_worst_first_and_distinguishes_all_four`,
+      `test_commercial_gap_outranks_operational_gap`,
+      `test_blocker_outranks_every_evidence_gap`, and
+      `test_readiness_states_are_all_reachable`.
+- [ ] **OPERATIONALLY_UNVALIDATED must stay its own state**: never
+      collapse it into `INCOMPLETE_EVIDENCE`. They answer different
+      questions, and merging them discards the most actionable output
+      the system has ("the commercial case holds up -- go verify
+      sourcing and shipping"). Re-run
+      `test_operationally_unvalidated_is_not_collapsed_into_incomplete`.
+- [ ] **Readiness vocabulary stays distinct from domain statuses**:
+      despite the word overlap in "OPERATIONALLY_UNVALIDATED", this is
+      an opportunity-level evidence statement, never a domain's verdict.
+      Keep it separate from Supplier's/Logistics' `operational_status`
+      and Risk's `risk_status`.
+- [ ] **Classification**: the four legacy bands, emitted as a FINAL
+      classification ONLY when `readiness == READY`. Every other state
+      must return `classification is None` with a populated
+      `withheld_reason`. Re-run `test_only_ready_is_publishable` and
+      `test_commercially_attractive_but_operationally_unvalidated_is_not_strong`.
+- [ ] **Non-final analytical band**: `analytical_band_non_final` may be
+      populated ONLY for `OPERATIONALLY_UNVALIDATED` (the one non-READY
+      state where the commercial case is fully evaluated), must never
+      appear for `INCOMPLETE_EVIDENCE` or `BLOCKED`, and must always be
+      labelled non-final wherever it is displayed. Re-run
+      `test_analytical_band_is_only_offered_for_operationally_unvalidated`
+      and `test_format_opportunity_report_labels_a_non_final_band_as_non_final`.
+      If it ever starts reading as an approval, delete it rather than
+      soften the label.
+- [ ] **Rounding**: integrated classifies the EXACT value; legacy
+      classifies the 2dp-rounded total. Both are intentional. Re-run
+      `test_classification_uses_the_exact_value_not_the_displayed_one`
+      and `test_legacy_classifies_the_rounded_total_by_documented_contract`.
+      Never classify from a display-formatted string.
+- [ ] **Blockers**: Supplier's are the only reachable ones today. A
+      blocker must never be averaged into the score, must override
+      publishability, and must stay namespaced by originating domain.
+      If Logistics' or Risk's `_detect_blockers()` ever becomes
+      reachable, re-run the blocker-propagation tests -- the composition
+      layer already handles them generically, but confirm it.
+- [ ] **Warnings**: preserved, namespaced by domain, and NOT
+      publishability-blocking (a warning is severity, not
+      impossibility). Re-run `test_warnings_do_not_block_publishability`.
+- [ ] **Adapter boundaries**: adapters translate only. They must never
+      recompute a domain's scoring, perform I/O, guess a missing value,
+      mutate the result they are given, invent a confidence figure, or
+      collapse one domain's evidence semantics into another's. Re-run
+      `test_adapters_do_not_mutate_the_domain_result`.
+- [ ] **Import boundaries**: `src/opportunity_models.py` must import
+      ONLY `dataclasses`; `src/opportunity_integration.py` must import
+      ONLY `src.opportunity_models`. No domain module may import the
+      opportunity layer (one-directional layering, no cycles). Re-run
+      `test_canonical_contract_depends_only_on_the_standard_library`,
+      `test_composition_engine_depends_only_on_the_canonical_contract`,
+      and `test_no_domain_module_imports_the_opportunity_layer`.
+- [ ] **Provenance**: every component must still answer "where did this
+      come from?" via `source_domain`, `evidence_label`,
+      `evidence_value`, and `source_status`. Raw external payloads must
+      never be stored here.
+- [ ] **Evidence profile semantics**: each domain's metric stays under
+      its ORIGINAL name (`demand_confidence`,
+      `margin_cost_completeness`, `*_evidence_completeness`,
+      `trend_observation_count`). No renaming to a generic
+      "confidence", and **no aggregate field** unless someone writes a
+      mathematical and semantic justification first. Re-run
+      `test_evidence_profile_offers_no_aggregate_metric`.
+- [ ] **Provisional-heuristic language**: re-confirm no code, report, or
+      doc describes an Opportunity Score as a probability, chance, or
+      likelihood of selling/succeeding/failing. Re-run
+      `test_result_never_describes_the_score_as_a_probability` and
+      `test_no_probability_field_exists_on_the_result`.
+- [ ] **Evidence-family contract**: the no-double-counting rule must
+      stay a declared `EvidenceFamilyPolicy` object in
+      `src/opportunity_models.py`, with `COMPONENT_FAMILIES` DERIVED
+      from `EVIDENCE_FAMILIES` rather than hand-maintained alongside it.
+      Re-run `test_search_interest_family_is_a_declared_policy_object`
+      and `test_component_families_are_derived_from_the_declared_policies`.
+      If anyone replaces it with ad-hoc conditionals, the overlap rule
+      becomes invisible to the next refactor -- that is the whole point
+      of keeping it as data.
+- [ ] **Model version**: `INTEGRATED_MODEL_VERSION` must be bumped
+      whenever weights, the validation layers, the family policy, the
+      false-safety guard, or the readiness rules change ONCE RELEASED.
+      It was deliberately NOT bumped for the pre-commit hardening pass
+      (integrated-v1 had never shipped, so there was no older v1 to
+      stay compatible with). The version is how a stored result stays
+      interpretable later.
+- [ ] **No fake automation**: CLI option 10 must keep stating plainly
+      that it composes illustrative scenarios, performs no fetching, and
+      that real input collection belongs to a future Orchestrator.
+      Re-run
+      `test_integrated_demo_does_not_claim_automated_end_to_end_analysis`.
+- [ ] **Demo coverage**: option 10's scenarios must keep demonstrating
+      ONE per readiness state (READY / OPERATIONALLY_UNVALIDATED /
+      INCOMPLETE_EVIDENCE / BLOCKED) -- enough to be instructive,
+      without growing into a maintenance burden. Re-run
+      `test_integrated_demo_exposes_one_scenario_per_readiness_state`.
+- [ ] **Future orchestration boundary**: when an Orchestrator is built,
+      it must CALL `compose_opportunity()` and must never reach inside
+      it, re-derive a component, or re-weight anything. Composition
+      stays pure and deterministic.
+- [ ] Regression tests: full suite still passing
+      (`python -m pytest -v` and `pytest -v`)
+
 ### Shared
 
 1. Check `pip list --outdated` for `requests`, `python-dotenv`, and

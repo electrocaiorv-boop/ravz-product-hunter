@@ -11,6 +11,7 @@ from src.integrations.mercadolivre import MercadoLivreItem, MercadoLivreResponse
 from src.logistics_analysis import analyze_logistics
 from src.logistics_models import LogisticsInputs
 from src.main import (
+    INTEGRATED_DEMO_SCENARIOS,
     ask,
     ask_with_default,
     collect_product,
@@ -19,6 +20,7 @@ from src.main import (
     format_demand_report,
     format_logistics_report,
     format_margin_report,
+    format_opportunity_report,
     format_report,
     format_risk_report,
     format_search_results,
@@ -40,6 +42,7 @@ from src.main import (
     recommend,
     run_competition_analysis,
     run_demand_analysis,
+    run_integrated_opportunity_analysis,
     run_logistics_analysis,
     run_margin_analysis,
     run_mercado_livre_search,
@@ -50,6 +53,7 @@ from src.main import (
 from src.margin_analysis import analyze_margin
 from src.margin_models import MarginInputs
 from src.models import ComponentScores, Product
+from src.opportunity_integration import compose_opportunity
 from src.risk_analysis import analyze_risk
 from src.risk_models import RiskInputs
 from src.scoring import score_opportunity
@@ -169,9 +173,12 @@ def test_parse_menu_choice_accepts_valid_options():
     assert parse_menu_choice(" 7 ") == 7
     assert parse_menu_choice("8") == 8
     assert parse_menu_choice("9") == 9
+    # Phase 11 added option 10 (Integrated Opportunity Analysis).
+    assert parse_menu_choice("10") == 10
+    assert parse_menu_choice(" 10 ") == 10
 
 
-@pytest.mark.parametrize("raw", ["0", "10", "abc", ""])
+@pytest.mark.parametrize("raw", ["0", "11", "abc", "", "1.0", "-1"])
 def test_parse_menu_choice_rejects_invalid_options(raw):
     with pytest.raises(ValueError):
         parse_menu_choice(raw)
@@ -833,3 +840,167 @@ def test_run_risk_analysis_reprompts_on_invalid_input_then_succeeds(capsys):
     assert "Invalid input" in captured.out
     assert "RISK ANALYSIS REPORT" in captured.out
     assert "Concentrated product" in captured.out
+
+
+# -- Phase 11: integrated opportunity analysis (composition layer) --------
+
+
+def scenario(index):
+    """Build one of the labelled illustrative demo scenarios.
+
+    Indices follow INTEGRATED_DEMO_SCENARIOS: 0 = complete evidence
+    (READY), 1 = operationally unvalidated, 2 = commercial evidence
+    incomplete (Margin withheld), 3 = Supplier blocked.
+    """
+    return INTEGRATED_DEMO_SCENARIOS[index]()
+
+
+def test_integrated_demo_exposes_one_scenario_per_readiness_state():
+    """Four scenarios, one per readiness state -- no more than needed."""
+    assert len(INTEGRATED_DEMO_SCENARIOS) == 4
+
+    readinesses = [
+        compose_opportunity("Demo", **scenario(index)[2]).readiness
+        for index in range(4)
+    ]
+    assert readinesses == [
+        "READY",
+        "OPERATIONALLY_UNVALIDATED",
+        "INCOMPLETE_EVIDENCE",
+        "BLOCKED",
+    ]
+
+
+def test_run_integrated_opportunity_analysis_renders_all_scenarios(capsys):
+    run_integrated_opportunity_analysis(make_input([]))
+
+    captured = capsys.readouterr()
+    assert captured.out.count("INTEGRATED OPPORTUNITY ANALYSIS") == 4
+    assert "Scenario A -- complete evidence" in captured.out
+    assert "Scenario B -- commercially attractive, operationally UNVALIDATED" in captured.out
+    assert "Scenario C -- COMMERCIAL evidence incomplete" in captured.out
+    assert "Scenario D -- Supplier BLOCKED" in captured.out
+
+
+def test_integrated_demo_takes_no_user_input(capsys):
+    """The demo must never consume input: make_input([]) would raise."""
+    run_integrated_opportunity_analysis(make_input([]))
+    assert "INTEGRATED OPPORTUNITY ANALYSIS" in capsys.readouterr().out
+
+
+def test_integrated_demo_does_not_claim_automated_end_to_end_analysis(capsys):
+    """No fake automation: Phase 11 is composition, not orchestration."""
+    run_integrated_opportunity_analysis(make_input([]))
+
+    out = capsys.readouterr().out.lower()
+    assert "does not collect or fetch anything itself" in out
+    assert "illustrative" in out
+    assert "not fetched data" in out
+    assert "future" in out and "orchestrator" in out
+    for forbidden in (
+        "automatically analyzing opportunity",
+        "fetching all data",
+        "fully automated",
+    ):
+        assert forbidden not in out
+
+
+def test_integrated_demo_labels_its_inputs_as_not_real_product_data(capsys):
+    run_integrated_opportunity_analysis(make_input([]))
+    assert "(ILLUSTRATIVE)" in capsys.readouterr().out
+
+
+def test_format_opportunity_report_shows_withheld_classification():
+    _title, _explanation, domain_results = scenario(2)
+    result = compose_opportunity("Demo", **domain_results)
+    report = format_opportunity_report(result)
+
+    assert "Final Classification: WITHHELD" in report
+    assert "Publishable recommendation: no" in report
+    assert "Missing COMMERCIAL requirements: margin" in report
+    assert "UNAVAILABLE (required for commercial validation)" in report
+    assert "Commercial validation: INCOMPLETE" in report
+
+
+def test_format_opportunity_report_separates_the_two_validation_layers():
+    """Spec 27: users must be able to answer both questions separately."""
+    _title, _explanation, domain_results = scenario(1)
+    result = compose_opportunity("Demo", **domain_results)
+    report = format_opportunity_report(result)
+
+    assert "Commercial validation: complete" in report
+    assert "Operational validation: INCOMPLETE" in report
+    assert "is the market/economic case validated?" in report
+    assert "is execution validated?" in report
+    assert "Readiness: OPERATIONALLY_UNVALIDATED" in report
+    assert "Final Classification: WITHHELD" in report
+    assert "Missing OPERATIONAL requirements: supplier, logistics" in report
+
+
+def test_format_opportunity_report_labels_a_non_final_band_as_non_final():
+    """A band outside READY must never read as an approval."""
+    _title, _explanation, domain_results = scenario(1)
+    result = compose_opportunity("Demo", **domain_results)
+    report = format_opportunity_report(result)
+
+    assert "Analytical band (NON-FINAL" in report
+    assert "not a recommendation" in report
+    assert "analytical, NOT final" in report
+
+
+def test_format_opportunity_report_marks_a_ready_score_as_final():
+    _title, _explanation, domain_results = scenario(0)
+    result = compose_opportunity("Demo", **domain_results)
+    report = format_opportunity_report(result)
+
+    assert "analytical, NOT final" not in report
+    assert "Commercial validation: complete" in report
+    assert "Operational validation: complete" in report
+    assert "Readiness: READY" in report
+    assert "WITHHELD" not in report
+
+
+def test_format_opportunity_report_shows_blockers_prominently():
+    _title, _explanation, domain_results = scenario(3)
+    result = compose_opportunity("Demo", **domain_results)
+    report = format_opportunity_report(result)
+
+    assert "Readiness: BLOCKED" in report
+    assert "BLOCKERS (never averaged into the score):" in report
+    assert "below moq_units" in report
+    # The arithmetic is still shown, not suppressed.
+    assert "Opportunity Score:" in report
+
+
+def test_format_opportunity_report_marks_trend_as_not_counted():
+    _title, _explanation, domain_results = scenario(0)
+    result = compose_opportunity("Demo", **domain_results)
+    report = format_opportunity_report(result)
+
+    assert "NOT COUNTED (correlated evidence" in report
+    assert "search-interest family" in report
+
+
+def test_format_opportunity_report_never_calls_coverage_confidence():
+    _title, _explanation, domain_results = scenario(0)
+    result = compose_opportunity("Demo", **domain_results)
+    report = format_opportunity_report(result)
+
+    assert "coverage is NOT confidence" in report
+    assert "each metric under its own name" in report
+
+
+def test_format_opportunity_report_states_the_score_is_provisional():
+    _title, _explanation, domain_results = scenario(0)
+    result = compose_opportunity("Demo", **domain_results)
+    report = format_opportunity_report(result).lower()
+
+    assert "provisional business heuristic" in report
+    assert "not a probability" in report
+
+
+def test_integrated_demo_scenarios_are_deterministic():
+    first = compose_opportunity("Demo", **scenario(0)[2])
+    second = compose_opportunity("Demo", **scenario(0)[2])
+    assert first.opportunity_score == second.opportunity_score
+    assert first.readiness == second.readiness
