@@ -34,7 +34,8 @@ Inversion appears **only** at sanctioned sites | tests prove *that* it inverts, 
 No randomness / clock / network / `global` in scoring layers | tests prove determinism behaviorally, not structurally |
 Probability language in **source and `CLAUDE.md`** | tests inspect only the result object |
 Observed zero distinguishable from missing | no test covers this distinction |
-Repository hygiene (see below) | zero test coverage |
+Repository hygiene (see below) | zero test coverage
+Secret-shaped values in the incoming diff | zero test coverage |
 
 **2. Legacy byte-freeze** — `src/models.py` and `src/scoring.py` are hashed
 against **pinned reference values** in `LEGACY_FROZEN`, not against `HEAD`.
@@ -79,6 +80,37 @@ PYTHONPATH=. python .claude/skills/invariant-check/check_invariants.py
 
 Exit `0` when every load-bearing invariant holds, `1` when any FAILs. The
 script runs `python -m pytest -q` itself and folds the result into its verdict.
+
+### Diff-scoped checks are source-driven
+
+The secret scan and the whitespace/conflict-marker check need a diff to
+examine. Two sources, both using the **same** patterns and the same code:
+
+| Source | When | How |
+|---|---|---|
+staged changes | local development | automatic, whenever `git diff --cached` is non-empty |
+commit range | CI | `INVARIANT_CHECK_DIFF_RANGE=<base>..HEAD` |
+
+Both can apply at once; each is scanned and reported separately.
+
+**This was a real defect, fixed after it shipped.** The checks used to be
+gated solely on a non-empty staged diff, and a fresh `actions/checkout` has
+nothing staged — so in GitHub Actions the secret scan never ran, and the skip
+was reported as a **PASS**. The gate looked green while examining nothing.
+
+Three guards now make that state unreachable:
+
+- with **no** source at all, the report says plainly that the scan did **not**
+  run, instead of implying coverage;
+- with no source **and** `CI` set, the checker **FAILs** — a CI run whose
+  secret gate did not execute is a broken gate;
+- an `INVARIANT_CHECK_DIFF_RANGE` that does not resolve **FAILs** rather than
+  reporting "0 files scanned" as success.
+
+`.github/workflows/ci.yml` supplies the range from the event: the PR base SHA
+for `pull_request`, `github.event.before` for `push`, falling back to
+`HEAD~1..HEAD` and then to the empty tree. The regexes live only in this
+script — never duplicated into YAML.
 
 Run from the repository root. If the output is clean, present it and stop — do
 not re-derive the checks by hand. If anything FAILs, read the cited file and

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 import pathlib
 import re
 import subprocess
@@ -687,8 +688,56 @@ PLACEHOLDER = re.compile(
     r"[A-Za-z0-9/+_.-]*(?:example|placeholder|redacted|xxxx))")
 
 
-def _staged_secret_hits():
-    """Locations of secret-shaped VALUES in added lines of the staged diff.
+# Env var through which CI supplies a commit range to scan.
+#
+# Without this, the diff-scoped checks below were INERT in GitHub Actions: a
+# fresh `actions/checkout` has nothing staged, so `git diff --cached` was
+# empty and both the secret scan and the whitespace check were skipped -- and
+# reported as a PASS. The gate looked green while checking nothing.
+DIFF_RANGE_ENV = "INVARIANT_CHECK_DIFF_RANGE"
+
+
+def _diff_sources():
+    """Which diffs to scan: staged changes locally, a commit range in CI.
+
+    Returns a list of (label, diff_args, file_count). Both sources can apply
+    at once; each is scanned with the SAME logic and the same patterns, so
+    there is exactly one implementation of secret detection in the project.
+    """
+    sources = []
+
+    staged = [f for f in git("diff", "--cached", "--name-only")[1].splitlines() if f]
+    if staged:
+        sources.append(("staged changes", ["diff", "--cached"], len(staged)))
+
+    commit_range = os.environ.get(DIFF_RANGE_ENV, "").strip()
+    if commit_range:
+        code, out, err = git("diff", "--name-only", commit_range)
+        if code != 0:
+            # An unresolvable range must never be recorded as a scanned
+            # source: it would report "0 file(s) scanned" and read as green
+            # while examining nothing.
+            fail(f"repository hygiene: {DIFF_RANGE_ENV} does not resolve",
+                 f"{commit_range!r} -- git diff exited {code}: "
+                 f"{(err or 'no detail')[:120]}",
+                 ".github/workflows/ci.yml",
+                 "The diff-scoped secret and whitespace checks would silently "
+                 "scan nothing while appearing to pass.",
+                 "Supply a range both of whose endpoints exist in this "
+                 "checkout (CI needs fetch-depth: 0 for the PR base commit).")
+        else:
+            names = [f for f in out.splitlines() if f]
+            sources.append(
+                (f"range {commit_range}", ["diff", commit_range], len(names)))
+
+    return sources
+
+
+def _secret_hits(diff_args):
+    """Locations of secret-shaped VALUES in the added lines of a diff.
+
+    `diff_args` is the git argv selecting which diff to read, so the same
+    scanner serves the local staged diff and a CI commit range.
 
     Returns a list of "path:line (category)" strings. The matched value is
     never captured, returned, logged or printed -- only where to look.
@@ -696,7 +745,7 @@ def _staged_secret_hits():
     hits: list[str] = []
     path = "<unknown>"
     new_lineno = 0
-    for line in git("diff", "--cached")[1].splitlines():
+    for line in git(*diff_args)[1].splitlines():
         if line.startswith("+++ b/"):
             path = line[6:]
             continue
@@ -757,31 +806,49 @@ def check_hygiene():
                  "omission is silent.",
                  "Narrow the rule to .claude/settings.local.json.")
 
-    staged = [f for f in git("diff", "--cached", "--name-only")[1].splitlines() if f]
-    if staged:
-        code, out, _ = git("diff", "--cached", "--check")
+    sources = _diff_sources()
+    for label, diff_args, file_count in sources:
+        code, out, _ = git(*diff_args, "--check")
         if code == 0:
-            ok(inv + ": staged diff clean (no whitespace errors or conflict markers)")
+            ok(f"{inv}: {label} clean (no whitespace errors or conflict markers)")
         else:
-            warn(inv + ": staged diff has whitespace/conflict issues", out[:300],
-                 where="staged changes",
+            warn(f"{inv}: {label} has whitespace/conflict issues", out[:300],
+                 where=label,
                  why="Noise, and conflict markers break code.",
                  fix="Fix before committing.")
 
         # Report only locations -- never print a suspected secret's value.
-        hits = _staged_secret_hits()
+        hits = _secret_hits(diff_args)
         if hits:
-            fail(inv + ": secret-shaped value in staged diff",
+            fail(f"{inv}: secret-shaped value in {label}",
                  f"{len(hits)} candidate(s) at {'; '.join(hits[:5])} "
                  "-- values intentionally not printed",
-                 "staged changes",
+                 label,
                  "A credential would enter history permanently.",
-                 "Unstage, remove the literal, move it to .env.")
+                 "Remove the literal and move it to .env.")
         else:
-            ok(inv + ": no secret-shaped values in staged diff",
-               f"{len(staged)} staged file(s) scanned")
-    else:
-        ok(inv + ": nothing staged (staged-diff checks skipped)")
+            ok(f"{inv}: no secret-shaped values in {label}",
+               f"{file_count} file(s) scanned")
+
+    if not sources:
+        if os.environ.get("CI"):
+            # A CI run whose secret gate silently did not execute is a broken
+            # gate. This is the exact defect being fixed: the skip used to be
+            # reported as a PASS, so CI looked green while scanning nothing.
+            fail(f"{inv}: no diff source in CI -- secret scan did NOT run",
+                 f"nothing staged and {DIFF_RANGE_ENV} is unset or empty",
+                 ".github/workflows/ci.yml",
+                 "The secret scan and whitespace check are diff-scoped. With "
+                 "no diff to scan they are inert, and a credential added by "
+                 "this change would pass through unexamined.",
+                 f"Set {DIFF_RANGE_ENV} to the event's commit range (see the "
+                 "'Determine diff range' step in the CI workflow).")
+        else:
+            # Local clean tree: there is genuinely nothing to scan. Say so
+            # explicitly rather than implying coverage.
+            ok(f"{inv}: no diff source -- secret scan did NOT run",
+               "nothing staged and no commit range supplied; stage changes or "
+               f"set {DIFF_RANGE_ENV} to scan a range")
 
     for path in module_paths():
         text = path.read_text(encoding="utf-8")

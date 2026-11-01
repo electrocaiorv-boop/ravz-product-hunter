@@ -48,6 +48,32 @@ jobs:
         # without a hand-maintained path list that could drift.
         run: python -m py_compile $(git ls-files '*.py')
 
+      - name: Determine diff range
+        # The checker's secret scan and whitespace check are diff-scoped. A
+        # fresh checkout has nothing staged, so without an explicit range
+        # they would be inert -- and would report green. This supplies the
+        # range for the event being built; the checker FAILs in CI if it ends
+        # up with no diff source at all.
+        id: range
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            echo "value=${PR_BASE_SHA}..HEAD" >> "$GITHUB_OUTPUT"
+          elif [ -n "$PUSH_BEFORE" ] && ! printf '%s' "$PUSH_BEFORE" | grep -qE '^0+$'; then
+            echo "value=${PUSH_BEFORE}..HEAD" >> "$GITHUB_OUTPUT"
+          elif git rev-parse --verify --quiet HEAD~1 >/dev/null; then
+            # First push to a new branch, or a force-push: no usable "before"
+            # commit, so fall back to the tip commit's own change.
+            echo "value=HEAD~1..HEAD" >> "$GITHUB_OUTPUT"
+          else
+            # Root commit: nothing to diff against. Scan the whole tree by
+            # diffing against the empty tree, so the scan is never inert.
+            echo "value=$(git hash-object -t tree /dev/null)..HEAD" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Invariant contract check
         # Verifies the legacy byte-freeze, architectural import boundaries,
         # inversion sites, scoring-layer determinism, probability language and
@@ -55,6 +81,7 @@ jobs:
         # still exist. Exits non-zero on any violation.
         env:
           PYTHONPATH: .
+          INVARIANT_CHECK_DIFF_RANGE: ${{ steps.range.outputs.value }}
         run: python .claude/skills/invariant-check/check_invariants.py
 
       - name: Tests
