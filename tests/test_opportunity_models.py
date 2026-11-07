@@ -218,7 +218,7 @@ def test_operational_layer_is_execution():
     assert OPERATIONAL_REQUIREMENTS == ("supplier", "logistics")
 
 
-def renamed_layer_weights_partition_the_total_exactly():
+def test_layer_weights_partition_the_total_exactly():
     assert TOTAL_COMMERCIAL_WEIGHT == pytest.approx(0.80, abs=1e-9)
     assert TOTAL_OPERATIONAL_WEIGHT == pytest.approx(0.20, abs=1e-9)
     assert TOTAL_COMMERCIAL_WEIGHT + TOTAL_OPERATIONAL_WEIGHT == pytest.approx(
