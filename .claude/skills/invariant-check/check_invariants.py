@@ -727,8 +727,39 @@ def _diff_sources():
                  "checkout (CI needs fetch-depth: 0 for the PR base commit).")
         else:
             names = [f for f in out.splitlines() if f]
-            sources.append(
-                (f"range {commit_range}", ["diff", commit_range], len(names)))
+            if not names:
+                # A range that RESOLVES but matches nothing is not a scanned
+                # source: recording it would report "0 file(s) scanned" and
+                # read as green while examining nothing. Distinct from an
+                # unresolvable range (above) and from no range at all (below).
+                #
+                # In CI a 0-file range means misconfiguration, not a genuinely
+                # empty change: every push and every PR has content. The
+                # commonest cause is a degenerate range such as `..HEAD`,
+                # which git silently resolves to `HEAD..HEAD`.
+                if os.environ.get("CI"):
+                    fail(f"repository hygiene: {DIFF_RANGE_ENV} matched no files",
+                         f"{commit_range!r} resolved but contains 0 changed "
+                         "files -- the diff-scoped checks would be inert",
+                         ".github/workflows/ci.yml",
+                         "The secret scan and whitespace check would examine "
+                         "nothing while appearing to pass. A 0-file range in "
+                         "CI indicates a misconfigured range, not an empty "
+                         "change.",
+                         f"Check the 'Determine diff range' step: a degenerate "
+                         f"range like '..HEAD' resolves to HEAD..HEAD. Supply "
+                         f"the event's real base..HEAD range.")
+                else:
+                    warn(f"repository hygiene: {DIFF_RANGE_ENV} matched no files",
+                         f"{commit_range!r} resolved but contains 0 changed "
+                         "files -- diff-scoped checks did NOT run",
+                         where=f"range {commit_range}",
+                         why="Nothing was scanned for this range.",
+                         fix="Supply a range that spans the change you want "
+                             "scanned.")
+            else:
+                sources.append(
+                    (f"range {commit_range}", ["diff", commit_range], len(names)))
 
     return sources
 

@@ -60,9 +60,21 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
         run: |
+          set -euo pipefail
           if [ "$EVENT" = "pull_request" ]; then
+            # Validate before building the range. An empty PR_BASE_SHA would
+            # yield "..HEAD", which git silently resolves to HEAD..HEAD -- a
+            # 0-file range that used to read as green. Fail loudly instead.
+            if [ -z "${PR_BASE_SHA:-}" ]; then
+              echo "::error::github.event.pull_request.base.sha is empty; cannot build a diff range." >&2
+              exit 1
+            fi
+            if ! git rev-parse --verify --quiet "${PR_BASE_SHA}^{commit}" >/dev/null; then
+              echo "::error::PR base SHA ${PR_BASE_SHA} is not a commit in this checkout (fetch-depth: 0 required)." >&2
+              exit 1
+            fi
             echo "value=${PR_BASE_SHA}..HEAD" >> "$GITHUB_OUTPUT"
-          elif [ -n "$PUSH_BEFORE" ] && ! printf '%s' "$PUSH_BEFORE" | grep -qE '^0+$'; then
+          elif [ -n "${PUSH_BEFORE:-}" ] && ! printf '%s' "$PUSH_BEFORE" | grep -qE '^0+$'; then
             echo "value=${PUSH_BEFORE}..HEAD" >> "$GITHUB_OUTPUT"
           elif git rev-parse --verify --quiet HEAD~1 >/dev/null; then
             # First push to a new branch, or a force-push: no usable "before"
