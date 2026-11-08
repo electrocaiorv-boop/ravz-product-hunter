@@ -1023,6 +1023,40 @@ def test_composition_engine_depends_only_on_the_canonical_contract():
     assert _imported_modules(engine) == {"src.opportunity_models"}
 
 
+# Modules allowed to call the composition engine. Everything else under
+# src/ is a domain or integration module and must not.
+#
+#   main.py         -- presentation composition root
+#   orchestrator.py -- Phase 12A: the Orchestrator Contract requires it
+#                      to CALL compose_opportunity(), so this import is
+#                      mandated, not a leak.
+#
+# Exemptions are PER-ASSERTION, deliberately. An earlier version used one
+# blanket tuple checked before both assertions below, which also stopped
+# enforcing that these modules must not reach PAST composition into the
+# pure contract layer -- the very violation that would be critical (a
+# caller assembling a result without the composition engine). Being
+# allowed to call the engine is not permission to bypass it.
+COMPOSITION_CALLERS = ("main.py", "orchestrator.py")
+
+
+def test_no_module_outside_the_layer_imports_the_pure_contract():
+    """`opportunity_models` is a pure contract; only its own layer uses it.
+
+    This applies to the orchestrator and `main.py` too: they may call
+    `compose_opportunity()`, but touching the contract directly would let
+    them construct an `OpportunityAnalysisResult` without the composition
+    engine, sidestepping weighting, family election and readiness.
+    """
+    import pathlib
+
+    for path in sorted(pathlib.Path("src").rglob("*.py")):
+        if path.name.startswith("opportunity_"):
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert "opportunity_models" not in source, path
+
+
 def test_no_domain_module_imports_the_opportunity_layer():
     """Layering must stay one-directional (no cycles, no coupling).
 
@@ -1032,10 +1066,11 @@ def test_no_domain_module_imports_the_opportunity_layer():
     import pathlib
 
     for path in sorted(pathlib.Path("src").rglob("*.py")):
-        if path.name.startswith("opportunity_") or path.name == "main.py":
+        if path.name.startswith("opportunity_"):
+            continue
+        if path.name in COMPOSITION_CALLERS:
             continue
         source = path.read_text(encoding="utf-8")
-        assert "opportunity_models" not in source, path
         assert "opportunity_integration" not in source, path
 
 

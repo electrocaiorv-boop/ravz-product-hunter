@@ -919,3 +919,118 @@ raising any error. Check these deliberately.
 2. Run `python -m pytest -v` and `pytest -v` — both must pass.
 3. Update `README.md`, `docs/LEARNING.md`, and this file if anything
    changed.
+
+## Credential handling in integration exceptions (closed)
+
+Two rules, both load-bearing, both regression-tested:
+
+1. **Never interpolate a `requests` exception's message.** Some embed the
+   offending header VALUE -- `InvalidHeader` does, and it is raised
+   offline when a token contains a newline (a double-quoted `.env` value
+   or `Get-Content -Raw` is enough). Report the exception TYPE instead.
+2. **Never chain a `requests` exception** as `__cause__` or
+   `__context__`. EVERY `requests` exception carries `.request.headers`,
+   holding the live `Authorization: Bearer <token>` -- so even a
+   perfectly sanitized message leaks via `traceback.format_exception()`
+   and `logging.exception()`.
+
+`raise ... from None` is **not** sufficient for rule 2. Measured:
+
+| Form | `__cause__` | `__context__` | traceback leaks | reachable |
+|---|---|---|---|---|
+| `raise P(...) from exc` | set | set | **yes** | **yes** |
+| `raise P(...) from None` | None | **set** | no | **yes** |
+| clear `__context__` in `except` | None | **set** | no | **yes** |
+| raise after the `except` block | None | None | no | no |
+
+Clearing `__context__` inside the handler does not work because `raise`
+re-sets it from the active exception afterwards. Only raising the
+translated error *after* the `try/except` completes leaves nothing
+reachable, which is what both integrations do.
+
+The remaining `from exc` chains (the `response.json()` handlers) are
+safe and deliberately kept: `requests` raises `JSONDecodeError` without
+populating `.request`/`.response`, and its message is a parse position.
+Verified -- do not "fix" these by unchaining them; the debuggability is
+free there.
+
+If you add an integration, both rules apply.
+
+## Known follow-up defects (open, deliberately NOT fixed in Phase 12A)
+
+Both were found reviewing Phase 12A. Both are **pre-existing**, live
+outside the Phase 12A diff, and touch *scoring/evidence semantics* —
+which is exactly why they were not fixed there. Phase 12A is
+orchestration; changing what evidence means mid-phase would make a
+behavior change unattributable to the layer that caused it.
+
+Neither fabricates data or inflates a score. Both are **reporting**
+defects: the number or the reason attached to missing evidence is wrong,
+not the decision to withhold it.
+
+### 1. Competition withheld reason is hardcoded and often untrue
+
+`src/opportunity_integration.py` (the `from_competition_result`
+adapter) attaches this `withheld_reason` to **every** withheld
+Competition score:
+
+> "Competition Analysis could not compute a score: no usable marketplace
+> evidence (Mercado Livre search is unreachable in this environment)"
+
+Two problems:
+
+- **It asserts a cause it does not know.** The reason is emitted
+  identically for a 403, a timeout, a data error, and a
+  supplied-but-too-thin result. "Unreachable" was disproven for the 403
+  case specifically — see the HTTP 403 diagnostic: we reach Mercado
+  Livre's gateway and are refused by policy, which is not the same thing.
+- **It names a provider inside a provider-neutral layer.** CLAUDE.md
+  requires `opportunity_integration.py` to be composition-only;
+  "Mercado Livre" should not appear in it at all.
+
+Phase 12A reduced the blast radius without touching this: the
+orchestrator now passes `competition_result=None` on a provider failure,
+so its own `ProviderCall.detail` and `unavailable[]` entry carry the
+real, specific reason. The wrong string still appears for a
+supplied-but-withheld result.
+
+**Fix direction:** the adapter should report *that* the score was
+withheld and let the caller supply the cause, rather than guessing one.
+
+### 2. Demand confidence is capped by a denominator counting a dead source
+
+`src/demand_analysis.py`:
+
+```python
+coverage_cap = 100 * signals.source_coverage
+confidence_score = _clamp(min(internal_quality_score, coverage_cap))
+```
+
+`source_coverage` counts marketplace as one of two configured source
+families, so it evaluates to 0.5 and caps Demand confidence at **50**.
+A live run reports exactly `demand confidence: 50.00`.
+
+But per CLAUDE.md's Evidence Family Invariant,
+`DemandAnalysis.marketplace_contribution` is **permanently `None`** —
+today's Demand Score is entirely Google-Trends-derived. So the
+denominator counts a source that cannot contribute, and the cap is
+derived from a premise the invariant says is false.
+
+The cap direction is safe (it only ever *lowers* confidence), so this
+understates rather than overstates. It is still wrong: a single-source
+metric reporting "50% of sources covered" implies a second independent
+family exists.
+
+**Fix direction:** either exclude marketplace from the denominator while
+`marketplace_contribution` is `None` — making the figure honest about
+being single-source — or re-enable the marketplace contribution, which
+per CLAUDE.md requires revisiting the 0.30 family weight and recording
+new reasoning. The second is a scoring-model change and would need a new
+model version, not an edit.
+
+### Why these are recorded here rather than fixed
+
+Changing either alters a published number (`confidence`) or a
+user-visible reason string. Under CLAUDE.md's Scoring Models rules that
+is a deliberate, reviewed change — not a drive-by during an
+orchestration phase.

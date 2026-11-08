@@ -34,9 +34,15 @@ No function may produce a probability from these scores.
 
 ## Current State
 
-**Phase 11 is complete.** Phases 1–11 are committed; the full suite passes (809 tests).
+**Phase 12A is implemented and under review.** Phases 1–11 are committed;
+the 12A orchestration foundation (`src/orchestrator.py`) is on a feature
+branch pending approval, per Git Discipline below. The full suite passes
+(867 tests).
 
-**Phase 12 is next: Orchestration Layer.** See "Phase 12 Orchestrator Contract" below before writing any code for it.
+**Phase 12B is next: Agentic Control Layer.** It is gated on 12A being
+stable and fully tested. See "Phase 12 is staged: 12A then 12B" below
+before writing any code for it — the LLM may decide *what to look at*,
+never *what the evidence means*.
 
 Completed:
 
@@ -53,12 +59,13 @@ Completed:
 | 9 | Deterministic Logistics Analysis |
 | 10 | Deterministic Risk Analysis |
 | 11 | Integrated Opportunity composition layer |
+| 12A | Deterministic orchestration (`src/orchestrator.py`) |
 
-Remaining work, in order: **Orchestration (Phase 12)**, then database/history, n8n automation, notifications, continuous improvement.
+Remaining work, in order: **Phase 12B (agentic control layer)**, then database/history, n8n automation, notifications, continuous improvement.
 
 Two numbering systems exist in this repo and must not be conflated:
 
-- **Phase numbers** (1–11 done, 12 next) — used by commit messages, doc section headers and module docstrings. This is the working numbering.
+- **Phase numbers** (1–11 and 12A done, 12B next) — used by commit messages, doc section headers and module docstrings. This is the working numbering.
 - **Roadmap step numbers** (1–14 in `README.md`) — the original plan. Orchestration is step 10 there. Phases do not map 1:1 onto steps; several phases layer onto a single step.
 
 When referring to work, use **phase numbers**.
@@ -78,8 +85,8 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1     # PowerShell activation
 pip install -r requirements.txt
 
-python -m src.main               # CLI entry point (menu options 1-10)
-python -m pytest -v              # full suite (809 tests, ~1s)
+python -m src.main               # CLI entry point (menu options 1-11)
+python -m pytest -v              # full suite (867 tests, ~1s)
 ```
 
 Bash (Git Bash / WSL / CI) activates differently:
@@ -312,7 +319,7 @@ Blockers must be surfaced namespaced by the domain that found them, outside the 
 - **`opportunity_models.py` is a pure contract layer** — imports only `dataclasses`.
 - **`opportunity_integration.py` is composition-only** — imports only the contract.
 - **Adapters translate; they do not recompute.** They must not re-derive domain scoring, perform I/O, guess missing values, mutate the result they are given, invent confidence, or collapse one domain's evidence semantics into another's.
-- **The orchestrator may import domains and integrations. Domains must never import the orchestrator.** Layering is one-directional.
+- **The orchestrator may import domains and integrations. Domains must never import the orchestrator.** Layering is one-directional. It lives at `src/orchestrator.py` (not the empty root `agents/`) so the invariant checker, which scans only `src/`, covers it.
 - `main.py` is presentation only: no scoring math, no HTTP.
 
 Wall-clock, randomness and I/O must not enter any analysis or composition layer. `datetime` may appear only as provenance (e.g. `retrieved_at`), never as a scoring input.

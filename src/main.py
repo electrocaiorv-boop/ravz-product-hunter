@@ -42,6 +42,7 @@ from src.margin_analysis import analyze_margin
 from src.margin_models import MarginInputs
 from src.models import ComponentScores, Product
 from src.opportunity_integration import compose_opportunity
+from src.orchestrator import OrchestrationRequest, run_opportunity_analysis
 from src.risk_analysis import analyze_risk
 from src.risk_models import RiskInputs
 from src.scoring import score_opportunity
@@ -91,10 +92,10 @@ def parse_non_empty_text(raw: str) -> str:
 
 
 def parse_menu_choice(raw: str) -> int:
-    """Validate that raw text is one of the main menu options (1-10)."""
+    """Validate that raw text is one of the main menu options (1-11)."""
     text = raw.strip()
-    if text not in {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}:
-        raise ValueError("choose a number from 1 to 10")
+    if text not in {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"}:
+        raise ValueError("choose a number from 1 to 11")
     return int(text)
 
 
@@ -1708,6 +1709,85 @@ def run_integrated_opportunity_analysis(input_func=input) -> None:
         print(format_opportunity_report(result))
 
 
+ORCHESTRATION_BANNER = (
+    "Phase 12A: deterministic ORCHESTRATION.\n"
+    "\n"
+    "Unlike option 10 (which composes results you already have), this option\n"
+    "goes and GETS the provider evidence, then runs the domain engines and\n"
+    "the Phase 11 composition over whatever came back.\n"
+    "\n"
+    "It calls each provider at most once:\n"
+    "  Apify Google Trends -> feeds BOTH Trend and Demand\n"
+    "  Mercado Livre search -> feeds BOTH Competition and Demand\n"
+    "\n"
+    "Expect provider failures here, reported honestly rather than hidden:\n"
+    "Mercado Livre search is unreachable (HTTP 403) in this environment, and\n"
+    "Apify needs APIFY_API_TOKEN in .env. A failed provider becomes explicit\n"
+    "unavailable evidence -- never a substituted value.\n"
+    "\n"
+    "Margin, Supplier, Logistics and Risk have NO integration in this\n"
+    "project: their inputs come from a separate investigation. This option\n"
+    "does not prompt for them, so they are reported unavailable and the\n"
+    "final classification is withheld. Use options 6-9 to analyze those\n"
+    "domains individually."
+)
+
+
+def format_orchestration_report(result) -> str:
+    """Render an OrchestrationResult: provenance first, then the verdict."""
+    request = result.request
+    lines = [
+        "=" * 70,
+        "ORCHESTRATED OPPORTUNITY ANALYSIS (Phase 12A)",
+        "=" * 70,
+        f"Product: {request.product_name}",
+        f"Query:   {request.query!r}   geo={request.geo}   "
+        f"timeframe={request.timeframe}",
+        "",
+        "Evidence resolution (each provider called at most once):",
+    ]
+    for call in result.provider_calls:
+        serves = ", ".join(call.serves)
+        lines.append(f"  [{call.status:<13}] {call.provider:<24} -> {serves}")
+        if call.detail:
+            lines.append(f"                  {call.detail}")
+
+    if result.unavailable:
+        lines += ["", "Unavailable evidence (explicit, never substituted):"]
+        for reason in result.unavailable:
+            lines.append(f"  - {reason}")
+
+    lines += ["", format_opportunity_report(result.opportunity)]
+
+    if result.notes:
+        lines += ["Orchestration notes:"]
+        for note in result.notes:
+            lines.append(f"  - {note}")
+    return "\n".join(lines)
+
+
+def run_orchestrated_analysis(input_func=input) -> None:
+    """Phase 12A: resolve evidence, run the engines, compose the result.
+
+    Collects only what the orchestrator genuinely needs (a product name
+    and a search query). It never prompts for the manually-investigated
+    domains -- inventing them here is exactly what the contract forbids.
+    """
+    print("\nOrchestrated Opportunity Analysis (Phase 12A)")
+    print("-" * 70)
+    print(ORCHESTRATION_BANNER)
+    print("-" * 70)
+
+    product_name = ask("\nProduct name: ", parse_non_empty_text, input_func)
+    query = ask("Search query: ", parse_non_empty_text, input_func)
+
+    request = OrchestrationRequest(product_name=product_name, query=query)
+    result = run_opportunity_analysis(request)
+
+    print()
+    print(format_orchestration_report(result))
+
+
 def main() -> None:
     print("RAVZ Product Hunter")
     print("1. Manual Product Analyzer")
@@ -1720,8 +1800,9 @@ def main() -> None:
     print("8. Analyze Logistics")
     print("9. Analyze Risk")
     print("10. Integrated Opportunity Analysis")
+    print("11. Orchestrated Opportunity Analysis (Phase 12A)")
 
-    choice = ask("Choose an option (1-10): ", parse_menu_choice)
+    choice = ask("Choose an option (1-11): ", parse_menu_choice)
 
     if choice == 1:
         run_manual_analyzer()
@@ -1741,8 +1822,10 @@ def main() -> None:
         run_logistics_analysis()
     elif choice == 9:
         run_risk_analysis()
-    else:
+    elif choice == 10:
         run_integrated_opportunity_analysis()
+    else:
+        run_orchestrated_analysis()
 
 
 if __name__ == "__main__":

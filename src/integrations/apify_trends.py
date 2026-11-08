@@ -109,6 +109,41 @@ class ApifyTrendsActorError(ApifyTrendsError):
     """The Actor itself reported an error row instead of trend data."""
 
 
+#: Why transport errors are translated and raised OUTSIDE the `except`
+#: block, rather than with `raise ... from exc`:
+#:
+#: EVERY `requests` exception carries `.request.headers`, which holds the
+#: live `Authorization: Bearer <token>` header. Some also embed the header
+#: VALUE in their message text (notably `InvalidHeader`, raised offline
+#: when a token contains a newline). So a credential can escape two ways:
+#: through the exception's text, and through the exception OBJECT.
+#:
+#: Sanitizing the message is not enough, because chaining the original
+#: keeps it reachable. Measured behaviour of each option:
+#:
+#:   raise Public(...) from exc   -> __cause__ set, __context__ set.
+#:                                   traceback.format_exception() PRINTS
+#:                                   the token; logging.exception() too.
+#:   raise Public(...) from None  -> __cause__ cleared, but __context__
+#:                                   STILL holds the original. Traceback
+#:                                   display is clean, yet anything that
+#:                                   walks the chain (error-reporting
+#:                                   SDKs, custom log formatters) can
+#:                                   still read the credential. NOT
+#:                                   complete sanitization.
+#:   clearing __context__ inside
+#:   the except block             -> ineffective: the `raise` statement
+#:                                   re-sets __context__ from the active
+#:                                   exception AFTER the assignment.
+#:   raise after the except block -> __cause__ None, __context__ None,
+#:                                   nothing reachable. The only complete
+#:                                   option, and the one used here.
+#:
+#: The cost is losing the original exception for debugging. That is
+#: accepted deliberately: the exception TYPE is preserved in the message,
+#: which names the failure mode without carrying request content.
+
+
 def _build_headers() -> dict:
     token = src.config.get_apify_token()
     if not token:
@@ -242,6 +277,11 @@ def fetch_trend_data(
         "includeRelatedTopics": False,
     }
 
+    # Transport failures are translated into a sanitized error that is
+    # raised AFTER this try/except completes. See `_sanitized_transport_error`
+    # -- the placement is load-bearing, not stylistic.
+    transport_error = None
+
     try:
         response = requests.post(
             f"{APIFY_BASE_URL}/actors/{ACTOR_ID}/run-sync-get-dataset-items",
@@ -250,13 +290,19 @@ def fetch_trend_data(
             timeout=timeout,
         )
     except requests.Timeout as exc:
-        raise ApifyTrendsTimeoutError(
+        transport_error = ApifyTrendsTimeoutError(
             f"Apify did not respond within {timeout}s"
-        ) from exc
+        )
     except requests.ConnectionError as exc:
-        raise ApifyTrendsConnectionError("Could not connect to Apify") from exc
+        transport_error = ApifyTrendsConnectionError("Could not connect to Apify")
     except requests.RequestException as exc:
-        raise ApifyTrendsError(f"Apify request failed: {exc}") from exc
+        transport_error = ApifyTrendsError(
+            f"Apify request failed ({type(exc).__name__}); detail withheld "
+            "because transport errors can embed request headers"
+        )
+
+    if transport_error is not None:
+        raise transport_error
 
     if not 200 <= response.status_code < 300:
         raise ApifyTrendsResponseError(
