@@ -956,7 +956,60 @@ free there.
 
 If you add an integration, both rules apply.
 
-## Known follow-up defects (open, deliberately NOT fixed in Phase 12A)
+## Known follow-up defects — BOTH RESOLVED in Phase 12B
+
+**Status: closed.** Both were corrected at the start of Phase 12B,
+before any agent code was written, so that agent behaviour could never
+be attributed to a stale reason string or a mis-stated metric.
+
+Neither correction required a new model version. `integrated-v1`
+governs weights, validation layers, the family policy, the false-safety
+guard and the readiness rules — **none of which changed**. Verified
+empirically: the composed aggregate, readiness, classification and
+every component score are identical before and after. What changed is
+one reason string and one rationale.
+
+### Resolution 1 — Competition withheld reason
+
+Now reads: *"Competition Analysis could not compute a score: no usable
+marketplace listing evidence was available."* Provider-neutral,
+cause-honest, and matching the pattern every sibling adapter already
+used. Regression-tested by
+`test_no_withheld_reason_names_a_provider_or_environment`, which fails
+if any adapter names a provider or environment again.
+
+### Resolution 2 — Demand confidence independence cap
+
+Option A was taken: the conservative cap stays at **50.0** and its
+rationale was corrected. It is now the named constant
+`SINGLE_SOURCE_CONFIDENCE_CAP`, justified as a single-source penalty
+rather than derived from `source_coverage` arithmetic.
+
+Confidence did **not** change in any state — verified against baselines
+captured before the edit:
+
+| Evidence | coverage | demand_score | confidence |
+|---|---|---|---|
+| no source | 0.0 | None | 0.0 |
+| single, rich | 0.5 | 70.0893… | 50.0 |
+| single, thin | 0.5 | 82.0 | 19.6153… |
+| marketplace only | 0.5 | None | 0.0 |
+| genuine multi-source | 1.0 | 70.0893… | 85.0 |
+
+Option B (excluding the dead source from the denominator) was rejected:
+it would have raised reported confidence from 50 to 85 without any
+improvement in the evidence. `source_coverage` is retained as honest
+provenance; it simply no longer sets the ceiling.
+
+A test (`test_confidence_is_computed_through_the_stated_rule`) pins the
+call site to the named rule, because with two families configured the
+old formula and the new one return identical values — so no
+value-based test could tell them apart.
+
+---
+
+## Historical record (original defect descriptions)
+
 
 Both were found reviewing Phase 12A. Both are **pre-existing**, live
 outside the Phase 12A diff, and touch *scoring/evidence semantics* —
@@ -968,7 +1021,7 @@ Neither fabricates data or inflates a score. Both are **reporting**
 defects: the number or the reason attached to missing evidence is wrong,
 not the decision to withhold it.
 
-### 1. Competition withheld reason is hardcoded and often untrue
+### (historical) 1. Competition withheld reason was hardcoded and often untrue
 
 `src/opportunity_integration.py` (the `from_competition_result`
 adapter) attaches this `withheld_reason` to **every** withheld
@@ -997,7 +1050,7 @@ supplied-but-withheld result.
 **Fix direction:** the adapter should report *that* the score was
 withheld and let the caller supply the cause, rather than guessing one.
 
-### 2. Demand confidence is capped by a denominator counting a dead source
+### (historical) 2. Demand confidence was capped by a denominator counting a dead source
 
 `src/demand_analysis.py`:
 
@@ -1028,7 +1081,7 @@ per CLAUDE.md requires revisiting the 0.30 family weight and recording
 new reasoning. The second is a scoring-model change and would need a new
 model version, not an edit.
 
-### Why these are recorded here rather than fixed
+### (historical) Why they were recorded rather than fixed at the time
 
 Changing either alters a published number (`confidence`) or a
 user-visible reason string. Under CLAUDE.md's Scoring Models rules that

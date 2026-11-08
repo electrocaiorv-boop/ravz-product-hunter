@@ -211,6 +211,33 @@ python -m src.main
 ```
 Then choose option `2` and enter a search term, e.g. `bebedouro automatico gatos`.
 
+### Reality check — what is and is not verified
+
+Three different levels of confidence apply here, and conflating them
+would misrepresent the work.
+
+**Tested, offline and deterministically:** the whole agent loop. Tool
+selection, allowlist rejection, argument validation, every budget limit,
+evidence reuse, prompt-injection resistance, missing-evidence handling,
+provenance verification, credential containment and the CLI flow — all
+with a scripted fake model and fixture providers. These are real tests
+of real code paths.
+
+**Simulated, not live:** the Anthropic integration. `tests/test_llm_client.py`
+exercises `complete()` against a fake `anthropic` module matching the
+documented response shape, which verifies the request parameters, the
+tool-use parsing, usage tracking and failure containment. It does **not**
+prove the live service accepts those parameters. **No agent run has ever
+reached the real API.** The first live call is still unperformed, and
+model IDs, parameter names and response shapes were checked against
+documentation, not against a response.
+
+**Unresolved:** the Mercado Livre HTTP 403. Credentials are not
+configured and the refusal may also be provider-side policy — see
+`docs/MERCADO_LIVRE_403.md`, status `BLOCKED_BY_CONFIGURATION`.
+Competition evidence is therefore unavailable in practice, so live runs
+end `INCOMPLETE_EVIDENCE` with the classification withheld.
+
 ### Limitations of this phase
 
 - No automatic Opportunity Score is computed from Mercado Livre results —
@@ -1625,6 +1652,147 @@ were unknown.
   same evidence, scoring is identical; the orchestrator adds no
   randomness, no wall-clock scoring input and no hidden state.
 
+
+## Phase 12B scope
+
+Phase 12B adds a **bounded research agent**. A language model decides
+*what evidence to look at*; the deterministic engines decide *what it
+means*. That division is the entire design, and it is enforced by tests
+rather than trusted.
+
+```
+                 LLM: chooses tools, sequences research, explains
+                  |
+                  v
+      src/agent/  (allowlist + validation + budgets + guards)
+                  |
+                  v
+  src/orchestrator.py  ->  domain engines  ->  compose_opportunity()
+```
+
+### The model's latitude, exactly
+
+It chooses **which** of four tools to call, with which arguments, in
+which order, within budget. That is all. It never sees a component
+weight, never receives a scoring formula, and no number it writes
+becomes a score.
+
+| Tool | Does | Cannot |
+|---|---|---|
+| `run_full_analysis` | runs the whole Phase 12A pipeline | change any weight or score |
+| `fetch_trend_evidence` | search-interest only (cheap screen) | score anything |
+| `search_marketplace` | listing facts only | score anything |
+| `declare_missing_evidence` | returns a structured **ask** | supply, estimate or default a value |
+
+There is deliberately **no** tool that publishes a listing, spends
+money, processes an order, or writes to storage. A capability that does
+not exist cannot be talked into existing by a prompt.
+
+### Every number is traceable, and that is checked
+
+`guards.verify_provenance()` extracts every figure from the model's
+prose and matches it against the composed analysis, allowing only the
+documented renderings (`79.9961` may appear as `80.00`). A figure that
+does not trace **fails** and the model's text is discarded wholesale in
+favour of a deterministic rendering — with the substitution reported,
+not hidden.
+
+This is the defence against the realistic failure: not a model that
+refuses to work, but one that writes a confident, plausible, invented
+score.
+
+### Prompt injection cannot widen permissions
+
+Provider content — listing titles especially — is attacker-controlled.
+It is fenced in `<<<UNTRUSTED_PROVIDER_DATA>>>` markers, with any copies
+of those markers inside the payload neutralized so content cannot close
+its own fence and continue as top-level text. A standing contract tells
+the model that fenced text is never an instruction.
+
+More importantly, that instruction is not what protects the system. The
+allowlist is an exact-match lookup and every argument is validated in
+code, so an unrecognized tool name never reaches a validator, let alone
+an implementation. 7 injection payloads and 16 forbidden tool names are
+regression-tested, each across multiple surfaces.
+
+### Budgets are enforced in code, never by asking
+
+| Limit | Default |
+|---|---|
+| tool calls | 8 |
+| LLM turns | 6 |
+| input tokens | 120,000 |
+| output tokens | 8,000 |
+| estimated cost | $0.50 |
+| wall-clock | 120s |
+
+Each is checked *before* the work, not noticed afterwards. Exceeding one
+terminates the run with `BUDGET_EXHAUSTED` and **partial** results,
+explicitly marked — never a guess, and never a substituted value.
+
+Cost is an **estimate** from a local price table applied to observed
+token counts. It is not a billed amount and the result says so. An
+unpriced model is charged at the highest known rate, so an unknown model
+over-estimates and stops early rather than overspending.
+
+### Evidence is fetched once per run
+
+The Phase 12A single-fetch rule extends across agent turns. A repeated
+identical provider call is served from the run's cache and marked
+`reused_evidence`. It still consumes tool-call budget — otherwise a loop
+of cached calls would be free and unbounded.
+
+### Missing evidence is requested, never invented
+
+Margin, Supplier, Logistics and Risk have no provider. The agent's only
+correct move is `declare_missing_evidence`, which returns the ask and
+nothing else — no value, no estimate, no placeholder key. The CLI
+prints these as "Evidence the agent is REQUESTING (never inventing)".
+
+### Optional Learning mode
+
+Explains the *mechanism*: which components had evidence, how negative
+dimensions are inverted exactly once, what coverage does and does not
+mean, and why a classification is withheld. It is held to the same
+provenance rule as the explanation.
+
+### Run it
+
+```bash
+pip install anthropic     # optional; only needed for option 12
+python -m src.main
+```
+
+Choose option `12`. Without the SDK or `ANTHROPIC_API_KEY` it reports
+UNAVAILABLE and states plainly that no score, classification or
+recommendation is implied. **Options 1–11 are unaffected and the full
+test suite passes with neither installed.**
+
+### What's new
+
+- `src/agent/` — `contracts.py`, `tools.py`, `budget.py`, `guards.py`,
+  `runner.py`, `explain.py`
+- `src/llm_client.py` — optional Anthropic wrapper, injectable
+- `src/main.py` — CLI option `12`, `format_agent_report()`
+- `tests/test_agent_security.py` — 107 adversarial tests
+- `tests/test_llm_client.py` — 17 client tests against a simulated SDK
+- `tests/test_agent_runner.py` — 41 behavioural tests
+- `tests/conftest_agent.py` — scripted fake LLM and provider fixtures
+
+### Limitations
+
+- **Agent mode needs a paid API key.** Everything deterministic does
+  not.
+- **Cost figures are estimates**, not billing data.
+- **Competition remains unavailable** while the Mercado Livre 403 is
+  unresolved (see `docs/MERCADO_LIVRE_403.md`), so live agent runs
+  typically end `INCOMPLETE_EVIDENCE` with a withheld classification.
+- **One candidate per run.** No batching, ranking or scheduling.
+- **No persistence.** Results are returned and printed.
+- **No approval workflow is needed yet** because no tool has an external
+  side effect. Adding one would require an explicit approval gate first.
+- **The agent is not calibrated.** It chooses research steps; it does
+  not know which products succeed, and neither do the scores.
 
 ## Architecture direction
 

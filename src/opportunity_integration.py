@@ -297,8 +297,8 @@ def from_competition_result(result) -> OpportunityComponent:
         result.competition_score,
         result.confidence_score,
         withheld_reason=(
-            "Competition Analysis could not compute a score: no usable marketplace "
-            "evidence (Mercado Livre search is unreachable in this environment)"
+            "Competition Analysis could not compute a score: no usable "
+            "marketplace listing evidence was available"
         ),
     )
 

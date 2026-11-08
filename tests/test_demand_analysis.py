@@ -1,6 +1,12 @@
 import pytest
 
-from src.demand_analysis import analyze_demand
+from src.demand_analysis import (
+    MULTI_SOURCE_CONFIDENCE_CAP,
+    NO_SOURCE_CONFIDENCE_CAP,
+    SINGLE_SOURCE_CONFIDENCE_CAP,
+    _independence_cap,
+    analyze_demand,
+)
 from src.demand_models import DemandSignals
 
 
@@ -214,3 +220,212 @@ def test_marketplace_sample_size_never_contributes_regardless_of_magnitude():
     assert result_small.marketplace_contribution is None
     assert result_large.marketplace_contribution is None
     assert result_small.demand_score == result_large.demand_score  # both None here
+
+
+# -- the independence cap on confidence (Option A correction) ------------
+#
+# The cap used to be `100 * source_coverage`, which made the ceiling an
+# artifact of the family denominator rather than a stated rule, and
+# implied a second source family could contribute when
+# `marketplace_contribution` is permanently None. It is now an explicit
+# named constant. The CORRECTION WAS TO THE RATIONALE, NOT THE NUMBERS --
+# every published value below is unchanged.
+
+
+# Captured from the implementation BEFORE the rationale fix, across every
+# reachable source-coverage state. Any drift here means Option A stopped
+# being output-preserving, which was its whole premise.
+BASELINE_CONFIDENCE = {
+    # (source_coverage, observation_count, present_groups) -> confidence
+    "no_source": (0.0, 0, 0.0),
+    "single_source_rich": (0.5, 54, 50.0),
+    "single_source_thin": (0.5, 6, 19.615384615384617),
+    "multi_source_rich": (1.0, 54, 85.0),
+}
+
+
+def test_option_a_preserves_every_published_confidence_value():
+    """Byte-identical confidence across all coverage states."""
+    # no source contributed at all
+    r = analyze_demand(make_signals(source_coverage=0.0))
+    assert r.confidence_score == BASELINE_CONFIDENCE["no_source"][2]
+
+    # one family, rich evidence -> capped at 50, not above
+    r = analyze_demand(make_signals(
+        source_coverage=0.5, trend_direction="growing",
+        recent_search_interest=70, average_search_interest=60,
+        trend_score=70, trend_observation_count=54,
+        related_query_count=12, rising_query_count=10, regional_spread=20,
+    ))
+    assert r.confidence_score == BASELINE_CONFIDENCE["single_source_rich"][2]
+
+    # one family, thin evidence -> quality binds BELOW the cap, so the
+    # cap is not what produced this number. Exercised through the REAL
+    # builder in test_end_to_end_baseline_is_unchanged below, which is
+    # where the recorded baseline came from.
+    r = analyze_demand(make_signals(
+        source_coverage=0.5, trend_direction="growing",
+        recent_search_interest=90, trend_observation_count=5,
+    ))
+    assert r.confidence_score < SINGLE_SOURCE_CONFIDENCE_CAP
+
+
+def test_end_to_end_baseline_is_unchanged():
+    """The five recorded states, through the real signal builder.
+
+    This is the authoritative output-preservation check: the values were
+    captured by running the pipeline BEFORE the rationale fix, so a
+    mismatch here means Option A failed its premise.
+    """
+    from src.demand_models import build_demand_signals
+    from src.integrations.mercadolivre import MercadoLivreItem
+    from src.trend_analysis import analyze_trend
+    from src.trend_models import RelatedQuery, TrendData, TrendPoint, TrendRegion
+
+    def trend(points=54, rich=True):
+        return TrendData(
+            query="q", geo="BR", timeframe="today 12-m",
+            retrieved_at="2026-01-01T00:00:00Z",
+            interest_over_time=[
+                TrendPoint(date=f"w{i}", value=50 + (i % 7) * 5,
+                           formatted_value=None)
+                for i in range(points)],
+            interest_by_region=[
+                TrendRegion(region_code=f"BR-{i}", region_name=f"R{i}",
+                            value=40 + i) for i in range(20)] if rich else [],
+            related_top_queries=[
+                RelatedQuery(query=f"t{i}", value=50, formatted_value=None,
+                             link=None) for i in range(12)] if rich else [],
+            related_rising_queries=[
+                RelatedQuery(query=f"r{i}", value=50, formatted_value=None,
+                             link=None) for i in range(10)] if rich else [],
+            source="fixture", interest_over_time_available=True,
+            related_queries_available=rich, regional_interest_available=rich)
+
+    items = [
+        MercadoLivreItem(item_id=f"M{i}", title=f"I{i}", price=100.0 + i * 7,
+                         currency_id="BRL", seller_id=i % 4,
+                         category_id="MLB1", condition="new", permalink=None,
+                         free_shipping=i % 2 == 0, available_quantity=50)
+        for i in range(8)]
+
+    rich, thin = trend(), trend(6, False)
+    cases = [
+        ("no source", {}, 0.0, None, 0.0),
+        ("single rich", dict(trend_data=rich, trend_metrics=analyze_trend(rich)),
+         0.5, 70.08932461873638, 50.0),
+        ("single thin", dict(trend_data=thin, trend_metrics=analyze_trend(thin)),
+         0.5, 82.0, 19.615384615384617),
+        ("marketplace only", dict(marketplace_items=items), 0.5, None, 0.0),
+        ("multi source", dict(trend_data=rich, trend_metrics=analyze_trend(rich),
+                              marketplace_items=items),
+         1.0, 70.08932461873638, 85.0),
+    ]
+    for label, kwargs, coverage, score, confidence in cases:
+        signals = build_demand_signals("q", "BR", **kwargs)
+        result = analyze_demand(signals)
+        assert signals.source_coverage == coverage, label
+        if score is None:
+            assert result.demand_score is None, label
+        else:
+            assert result.demand_score == pytest.approx(score, abs=1e-9), label
+        assert result.confidence_score == pytest.approx(
+            confidence, abs=1e-9), label
+
+
+def test_genuine_multi_source_evidence_may_exceed_the_single_source_cap():
+    """The cap must not punish evidence that IS corroborated.
+
+    Verified explicitly because a fix that merely clamped everything to
+    50 would also "preserve" the single-source numbers while silently
+    breaking the multi-source path.
+    """
+    multi = analyze_demand(make_signals(
+        source_coverage=1.0, trend_direction="growing",
+        recent_search_interest=70, average_search_interest=60,
+        trend_score=70, trend_observation_count=54,
+        related_query_count=12, rising_query_count=10, regional_spread=20,
+        marketplace_sample_size=8, price_dispersion=0.2,
+    ))
+    assert multi.confidence_score == BASELINE_CONFIDENCE["multi_source_rich"][2]
+    assert multi.confidence_score > SINGLE_SOURCE_CONFIDENCE_CAP
+
+
+def test_single_source_cap_binds_regardless_of_how_good_one_source_is():
+    """Completeness and volume cannot buy their way past independence."""
+    maxed = analyze_demand(make_signals(
+        source_coverage=0.5, trend_direction="growing",
+        recent_search_interest=100, average_search_interest=100,
+        trend_score=100, trend_observation_count=5000,
+        related_query_count=999, rising_query_count=999, regional_spread=27,
+    ))
+    assert maxed.confidence_score == SINGLE_SOURCE_CONFIDENCE_CAP
+
+
+def test_independence_cap_is_a_stated_rule_not_a_coverage_ratio():
+    """The ceiling must not move when the family count changes.
+
+    Under the old `100 * source_coverage`, adding a third family would
+    have silently redefined the single-source ceiling to 33.3 and
+    two-of-three to 66.7 -- values nobody chose. The cap is now selected
+    by state, so any partial coverage yields the same stated ceiling.
+    """
+    for partial in (1 / 3, 0.5, 2 / 3, 0.75, 0.99):
+        assert _independence_cap(partial) == SINGLE_SOURCE_CONFIDENCE_CAP
+
+    assert _independence_cap(0.0) == NO_SOURCE_CONFIDENCE_CAP
+    assert _independence_cap(1.0) == MULTI_SOURCE_CONFIDENCE_CAP
+
+
+def test_source_coverage_remains_accurate_provenance():
+    """The ratio is still reported honestly; it just no longer sets the cap."""
+    signals = make_signals(source_coverage=0.5, trend_direction="growing",
+                           trend_observation_count=54)
+    assert signals.source_coverage == 0.5
+    # analyze_demand does not mutate or relabel it
+    analyze_demand(signals)
+    assert signals.source_coverage == 0.5
+
+
+def test_confidence_cap_is_documented_as_provisional_not_calibrated():
+    """CLAUDE.md Core Principle: no score may imply a calibrated estimate."""
+    import src.demand_analysis as module
+
+    doc = module.__doc__
+    lowered = doc.lower()
+    assert "provisional" in lowered
+    # It must explicitly disclaim being a statistical/accuracy measure.
+    assert "not a statistical confidence interval" in lowered or (
+        "not a" in lowered and "calibrated accuracy estimate" in lowered)
+    assert "has not been validated against real outcomes" in lowered
+
+
+def test_confidence_is_computed_through_the_stated_rule(monkeypatch):
+    """The call site must consult `_independence_cap`, not re-derive a ratio.
+
+    With the two families configured today, `100 * source_coverage` and
+    `_independence_cap(...)` return identical values -- so no
+    value-based test can tell them apart, and a revert of the call site
+    would pass every other test here. This test closes that gap by
+    proving the helper is actually what produces the ceiling.
+    """
+    import src.demand_analysis as module
+
+    seen = []
+
+    def spy(source_coverage):
+        seen.append(source_coverage)
+        return 7.0  # deliberately not any ratio of 100
+
+    monkeypatch.setattr(module, "_independence_cap", spy)
+
+    result = module.analyze_demand(make_signals(
+        source_coverage=0.5, trend_direction="growing",
+        recent_search_interest=90, average_search_interest=80,
+        trend_score=90, trend_observation_count=54,
+        related_query_count=12, rising_query_count=10, regional_spread=20,
+    ))
+
+    assert seen == [0.5], "analyze_demand did not consult _independence_cap"
+    assert result.confidence_score == 7.0, (
+        "confidence did not come from the independence cap")

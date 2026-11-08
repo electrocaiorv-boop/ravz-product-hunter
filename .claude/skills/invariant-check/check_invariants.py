@@ -412,6 +412,22 @@ STDLIB = set(getattr(sys, "stdlib_module_names", ()))
 # false-positive on any future module whose name merely contains it.
 ORCHESTRATOR_MODULES = ("src.orchestrator", "src.orchestration", "src.agents")
 
+# Phase 12B. The agent sits ABOVE the orchestrator: it may import
+# downward, nothing below it may import upward, and only the dedicated
+# client module may touch the optional LLM SDK.
+AGENT_PACKAGE = "src.agent"
+LLM_CLIENT_MODULE = "src.llm_client"
+LLM_SDK = "anthropic"
+
+
+def _is_agent_module(path):
+    return path.parent.name == "agent" and path.parent.parent == SRC
+
+
+def _imports_agent(internal):
+    return sorted(m for m in internal
+                  if m == AGENT_PACKAGE or m.startswith(AGENT_PACKAGE + "."))
+
 
 def _is_domain_analysis(path):
     return path.name.endswith("_analysis.py") and path.parent == SRC
@@ -486,6 +502,66 @@ def check_architecture():
             fail(f"{inv}: HTTP outside the integration boundary", name, name,
                  "Only src/integrations/* may perform HTTP.",
                  "Move the call behind an integration.")
+
+        # -- Phase 12B agent boundaries --------------------------------
+
+        # Nothing below the agent may import it. The agent is the top
+        # layer; an upward import would create a cycle and let a
+        # deterministic module depend on a non-deterministic one.
+        if not _is_agent_module(path) and name != rel(SRC / "main.py"):
+            upward = _imports_agent(internal)
+            if upward:
+                problems = True
+                fail(f"{inv}: a lower layer imports the agent package",
+                     f"{name} imports {upward}", name,
+                     "The agent is the top layer. An upward import would "
+                     "make a deterministic module depend on a "
+                     "non-deterministic one.",
+                     "Invert the dependency: pass data into the agent.")
+
+        if _is_agent_module(path):
+            # The agent must not reach the pure contract, or it could
+            # assemble a result without the composition engine.
+            if any(m.startswith("src.opportunity_models") for m in internal):
+                problems = True
+                fail(f"{inv}: agent imports the pure contract layer",
+                     name, name,
+                     "The agent could then construct an analysis result "
+                     "without weighting, family election or readiness.",
+                     "Depend on the orchestrator instead.")
+            # Only the dedicated client module may touch the SDK.
+            if LLM_SDK in external:
+                problems = True
+                fail(f"{inv}: agent module imports the LLM SDK directly",
+                     f"{name} imports {LLM_SDK}", name,
+                     "The SDK is an OPTIONAL dependency; importing it "
+                     "outside src/llm_client.py would make the agent "
+                     "package unimportable without it, and the test suite "
+                     "must pass with it absent.",
+                     "Route model access through src/llm_client.py.")
+
+    # The SDK may appear in exactly one module, and it must be optional
+    # there (imported inside a function, not at module top level).
+    sdk_importers = []
+    for path in module_paths():
+        external = {m.split(".")[0]
+                    for m in imports_of(parse(path)) if not m.startswith("src.")}
+        if LLM_SDK in external:
+            sdk_importers.append(rel(path))
+    expected = [rel(SRC / "llm_client.py")]
+    if sdk_importers == expected:
+        ok(inv + ": optional LLM SDK is confined to src/llm_client.py",
+           f"importers: {sdk_importers}")
+    elif not sdk_importers:
+        ok(inv + ": optional LLM SDK is not imported at module scope anywhere",
+           "the SDK is imported lazily inside functions")
+    else:
+        problems = True
+        fail(inv + ": optional LLM SDK imported outside its client module",
+             str(sdk_importers), ", ".join(sdk_importers),
+             "Every deterministic feature must work without the optional "
+             "SDK installed.",
+             "Confine the import to src/llm_client.py.")
 
     contract = imports_of(parse(SRC / "opportunity_models.py"))
     if contract == {"dataclasses"}:
