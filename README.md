@@ -1474,6 +1474,158 @@ opportunity layer.
   must be supplied by the caller.
 - Not validated against real outcomes.
 
+## Phase 12A scope
+
+Phase 12A adds **deterministic orchestration**: the layer that goes and
+*gets* the evidence, then drives the Phase 4–10 engines and the Phase 11
+composition over whatever came back.
+
+```
+integrations -> domain engines -> compose_opportunity()
+```
+
+Phase 11 answered "given these results, what do they support?"
+Phase 12A answers "go get the results." It adds **no intelligence** — no
+LLM, no MCP, no agentic reasoning. Those are Phase 12B.
+
+### The orchestrator coordinates; it owns no scoring math
+
+`src/orchestrator.py` is the only module permitted to import both
+integrations and domain analyzers. Per CLAUDE.md's Orchestrator
+Contract it **may** call integrations, coordinate analyzers, call
+`compose_opportunity()`, collect provenance and sequence work — and
+**must not** calculate scores, re-weight, invert, re-derive domain
+formulas, fabricate data, convert `None` to a value, bypass
+`compose_opportunity()`, persist raw payloads, or leak credentials.
+
+Two of those are enforced structurally rather than by review:
+
+- an AST test fails on any `100 - x` inversion or weight-shaped float
+  literal (`0 < v < 1`) anywhere in the module;
+- the orchestrator imports `src.opportunity_integration` but is
+  forbidden from importing `src.opportunity_models`, so it cannot
+  assemble a result without going through the composition engine.
+
+### Shared evidence is fetched once
+
+Two provider calls feed five domains:
+
+```
+fetch_trend_data()      ONE Apify Google-Trends call
+    |-> analyze_trend(TrendData)                      -> Trend
+    '-> build_demand_signals(trend_data, trend_metrics) -> Demand
+
+search_products()       ONE Mercado Livre search
+    |-> build_competition_signals(items)              -> Competition
+    '-> build_demand_signals(marketplace_items)
+```
+
+Calling a provider twice would double its cost and rate-limit exposure
+and — worse — could hand two *different* samples to two domains meant to
+describe the same market.
+
+This is **not** the same rule as the Demand/Trend no-double-counting
+invariant. Sharing one fetch is required; what is forbidden is letting
+both Demand and Trend earn weighted contributions from it. That rule
+stays in `compose_opportunity()` and is not reimplemented here — the
+orchestrator passes both results in and the composition layer elects one
+family representative.
+
+### Provider failures become evidence, not exceptions
+
+Each typed failure family (`ApifyTrendsError`, `MercadoLivreError`:
+configuration / timeout / connection / response / data / actor) is
+operationally different but **epistemically identical** — every one means
+*we do not know*. Each maps to that domain's score being `None` with a
+specific reason, recorded in a `ProviderCall` provenance entry. Never a
+default, never a retry that quietly yields partial data, never a
+swallowed exception. One dead provider does not cost the other domains
+their evidence.
+
+### Margin, Supplier, Logistics and Risk have no integration
+
+Their inputs come from a real investigation, not an API. The orchestrator
+accepts already-built `*Inputs` objects and runs the analyzer when one is
+supplied. Omitting them is honest, not a failure: the composition layer
+reports them unavailable and withholds the classification. The
+orchestrator never invents them, and never claims a provider it does not
+have.
+
+### Run it
+
+```bash
+python -m src.main
+```
+
+Choose option `11`. It prompts only for a product name and a search
+query — deliberately not for the manually-investigated domains, since
+prompting there invites invented inputs. Use options 6–9 to analyze those
+individually.
+
+A real run in this environment, captured 2026-11-08 (Apify token
+configured, Mercado Livre returning 403). The exact numbers come from
+live Google Trends data and drift between runs — the *structure* of the
+output is the stable part:
+
+```
+Evidence resolution (each provider called at most once):
+  [ok           ] apify:google-trends      -> trend, demand
+                  54 point(s) returned, 54 usable observation(s) from
+                  apify:themineworks/google-trends-pro
+  [failed       ] mercadolivre:search      -> competition, demand
+                  MercadoLivreResponseError: Mercado Livre returned 403
+                  Forbidden for this search. ...
+  [not_supplied ] manual:margin            -> margin
+                  no inputs supplied for this run
+  ...
+
+Opportunity Score: 67.67 (PARTIAL) (analytical, NOT final)
+Component coverage: 30.00%
+Commercial validation: INCOMPLETE   (coverage 37.50%)
+Operational validation: INCOMPLETE  (coverage 0.00%)
+Readiness: INCOMPLETE_EVIDENCE
+Final Classification: WITHHELD
+Missing COMMERCIAL requirements: competition, margin, risk
+Missing OPERATIONAL requirements: supplier, logistics
+
+  demand       raw 85.34 -> opportunity 85.34  x weight 0.30 = 25.60  [commercial]
+  trend        raw 58.42 -> NOT COUNTED (correlated evidence -- search-interest family)
+  competition  UNAVAILABLE (required for commercial validation) -- ...
+```
+
+That output is the whole point: real Google Trends evidence scored, one
+provider's failure stated plainly, the duplicate-evidence family handled,
+and the recommendation **withheld** rather than guessed. The false-safety
+guard also fired, capping the aggregate because two negative dimensions
+were unknown.
+
+### What's new
+
+- `src/orchestrator.py` — `OrchestrationRequest`, `ProviderCall`,
+  `OrchestrationResult`, `run_opportunity_analysis()`
+- `src/main.py` — CLI option `11. Orchestrated Opportunity Analysis`,
+  `format_orchestration_report()`
+- `tests/test_orchestrator.py` — 54 tests, all with controlled fixtures
+
+### Limitations
+
+- **Mercado Livre search returns HTTP 403** in this environment, so
+  Competition is usually unavailable and most live runs are
+  `INCOMPLETE_EVIDENCE` with a withheld classification. That is a true
+  statement about the project's evidence position, not a defect.
+- **Four of seven domains have no provider.** A fully `READY` live result
+  requires manually supplied Margin, Supplier, Logistics and Risk inputs.
+- **No caching and no retries.** Deliberate: a cache raises a provenance
+  question ("how old is this evidence?") that no model field answers yet,
+  and a silent retry can turn a hard failure into partial data.
+- **One candidate per run.** No batching, ranking or scheduling.
+- **No persistence.** Results are returned and printed, not stored —
+  that is the database phase.
+- **Non-determinism is confined to what the providers return.** Given the
+  same evidence, scoring is identical; the orchestrator adds no
+  randomness, no wall-clock scoring input and no hidden state.
+
+
 ## Architecture direction
 
 The system is designed to grow into an orchestrator coordinating

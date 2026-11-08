@@ -6,6 +6,7 @@ from src.competition_analysis import analyze_competition
 from src.competition_models import CompetitionSignals
 from src.demand_analysis import analyze_demand
 from src.demand_models import DemandSignals
+from src import main
 from src.integrations.apify_trends import ApifyTrendsResponseError
 from src.integrations.mercadolivre import MercadoLivreItem, MercadoLivreResponseError
 from src.logistics_analysis import analyze_logistics
@@ -46,6 +47,7 @@ from src.main import (
     run_logistics_analysis,
     run_margin_analysis,
     run_mercado_livre_search,
+    run_orchestrated_analysis,
     run_risk_analysis,
     run_supplier_analysis,
     run_trend_analysis,
@@ -176,9 +178,11 @@ def test_parse_menu_choice_accepts_valid_options():
     # Phase 11 added option 10 (Integrated Opportunity Analysis).
     assert parse_menu_choice("10") == 10
     assert parse_menu_choice(" 10 ") == 10
+    # Phase 12A added option 11 (Orchestrated Opportunity Analysis).
+    assert parse_menu_choice("11") == 11
 
 
-@pytest.mark.parametrize("raw", ["0", "11", "abc", "", "1.0", "-1"])
+@pytest.mark.parametrize("raw", ["0", "12", "abc", "", "1.0", "-1"])
 def test_parse_menu_choice_rejects_invalid_options(raw):
     with pytest.raises(ValueError):
         parse_menu_choice(raw)
@@ -1004,3 +1008,148 @@ def test_integrated_demo_scenarios_are_deterministic():
     second = compose_opportunity("Demo", **scenario(0)[2])
     assert first.opportunity_score == second.opportunity_score
     assert first.readiness == second.readiness
+
+
+# -- Phase 12A: orchestrated analysis CLI path ---------------------------
+
+
+def test_run_orchestrated_analysis_reports_provider_failures_honestly(
+    monkeypatch, capsys
+):
+    """The CLI path must surface unavailable evidence, not hide it."""
+    from src.integrations.apify_trends import ApifyTrendsConfigurationError
+    from src.integrations.mercadolivre import MercadoLivreResponseError
+
+    def dead_trends(query, geo="BR", timeframe="today 12-m"):
+        raise ApifyTrendsConfigurationError("APIFY_API_TOKEN is not configured")
+
+    def dead_marketplace(query, limit=10):
+        raise MercadoLivreResponseError(403, "forbidden")
+
+    monkeypatch.setattr("src.orchestrator.fetch_trend_data", dead_trends)
+    monkeypatch.setattr("src.orchestrator.search_products", dead_marketplace)
+
+    run_orchestrated_analysis(make_input(["Fone Bluetooth", "fone bluetooth"]))
+
+    out = capsys.readouterr().out
+    assert "ORCHESTRATED OPPORTUNITY ANALYSIS (Phase 12A)" in out
+    assert "Evidence resolution" in out
+    assert "failed" in out
+    assert "Unavailable evidence" in out
+    # A withheld recommendation, not a fabricated one.
+    assert "Final Classification: WITHHELD" in out
+    assert "INCOMPLETE_EVIDENCE" in out
+
+
+def test_run_orchestrated_analysis_never_prompts_for_manual_domains(
+    monkeypatch, capsys
+):
+    """Only product name and query are collected.
+
+    Prompting for Margin/Supplier/Logistics/Risk here would invite
+    invented inputs; the banner says so and make_input would raise
+    StopIteration if a third prompt were issued.
+    """
+    from src.integrations.apify_trends import ApifyTrendsTimeoutError
+    from src.integrations.mercadolivre import MercadoLivreTimeoutError
+
+    monkeypatch.setattr(
+        "src.orchestrator.fetch_trend_data",
+        lambda *a, **k: (_ for _ in ()).throw(ApifyTrendsTimeoutError("t")))
+    monkeypatch.setattr(
+        "src.orchestrator.search_products",
+        lambda *a, **k: (_ for _ in ()).throw(MercadoLivreTimeoutError("t")))
+
+    run_orchestrated_analysis(make_input(["Produto", "consulta"]))
+
+    out = capsys.readouterr().out
+    assert "no integration" in out
+    assert "separate investigation" in out or "separate" in out
+
+
+def test_orchestration_banner_does_not_overclaim_automation(monkeypatch, capsys):
+    """No fake end-to-end: the banner states what is and is not fetched."""
+    from src.integrations.apify_trends import ApifyTrendsTimeoutError
+    from src.integrations.mercadolivre import MercadoLivreTimeoutError
+
+    monkeypatch.setattr(
+        "src.orchestrator.fetch_trend_data",
+        lambda *a, **k: (_ for _ in ()).throw(ApifyTrendsTimeoutError("t")))
+    monkeypatch.setattr(
+        "src.orchestrator.search_products",
+        lambda *a, **k: (_ for _ in ()).throw(MercadoLivreTimeoutError("t")))
+
+    run_orchestrated_analysis(make_input(["P", "q"]))
+    out = capsys.readouterr().out
+    low = out.lower()
+
+    assert "at most once" in low
+    assert "no integration" in low
+    assert "fully automated" not in low
+
+    # Probability/guarantee words may appear ONLY inside an explicit
+    # denial. A bare substring check would flag the disclaimer itself
+    # ("is NOT a probability of selling"), so assert the meaningful
+    # rule: every such line must negate the claim.
+    for line in out.splitlines():
+        lowered = line.lower()
+        if any(w in lowered for w in
+               ("probability", "guarantee", "chance", "likelihood")):
+            assert "not " in lowered or "never" in lowered, (
+                f"unqualified claim: {line.strip()!r}")
+
+
+# -- direct integration callers must not print credentials ---------------
+
+
+@pytest.mark.parametrize("flow_name, answers", [
+    ("run_mercado_livre_search", ["fone bluetooth"]),
+    ("run_trend_analysis", ["fone bluetooth", "", ""]),
+    ("run_demand_analysis", ["fone bluetooth", ""]),
+    ("run_competition_analysis", ["fone bluetooth"]),
+])
+def test_direct_integration_callers_do_not_print_credentials(
+    monkeypatch, capsys, flow_name, answers
+):
+    """The CLI flows that call integrations directly must not leak.
+
+    These four flows predate the orchestrator and call `search_products`
+    / `fetch_trend_data` themselves, printing the raised error with
+    `print(f"...{exc}")`. They are NOT covered by the orchestrator's
+    redaction, so before the integration-boundary fix each one printed
+    `Authorization: Bearer <token>` straight to stdout -- confirmed by
+    reproduction on all four.
+
+    The fix is in the integrations, so this test asserts the outcome at
+    the surface the user actually sees.
+    """
+    import requests
+
+    from src.integrations import apify_trends, mercadolivre
+
+    fixture_value = "not-a-credential-fixture-value"
+    monkeypatch.setattr(
+        apify_trends.src.config, "get_apify_token", lambda: fixture_value + "\n")
+    monkeypatch.setenv(mercadolivre.ACCESS_TOKEN_ENV_VAR, fixture_value + "\n")
+
+    def explode(method, module):
+        def _fake(*args, **kwargs):
+            requests.Request(method, "https://example.invalid",
+                             headers=kwargs.get("headers") or {}).prepare()
+            raise AssertionError("expected requests to reject the header")
+        return _fake
+
+    monkeypatch.setattr(apify_trends.requests, "post",
+                        explode("POST", apify_trends))
+    monkeypatch.setattr(mercadolivre.requests, "get",
+                        explode("GET", mercadolivre))
+
+    remaining = iter(answers)
+    getattr(main, flow_name)(input_func=lambda prompt="": next(remaining))
+
+    captured = capsys.readouterr()
+    printed = captured.out + captured.err
+    assert fixture_value not in printed
+    assert "Bearer" not in printed
+    # The failure is still surfaced to the user, not silently swallowed.
+    assert "failed" in printed or "unavailable" in printed

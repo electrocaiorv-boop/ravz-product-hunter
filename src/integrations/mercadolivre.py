@@ -150,6 +150,12 @@ def search_products(
 
     params = {"q": query, "limit": limit}
 
+    # Translated here, raised after the try/except completes -- see the
+    # block comment above `_build_headers` in apify_trends.py for why the
+    # placement matters (chaining keeps the credential reachable even
+    # with `from None`).
+    transport_error = None
+
     try:
         response = requests.get(
             f"{BASE_URL}/sites/{SITE_ID}/search",
@@ -158,15 +164,21 @@ def search_products(
             timeout=timeout,
         )
     except requests.Timeout as exc:
-        raise MercadoLivreTimeoutError(
+        transport_error = MercadoLivreTimeoutError(
             f"Mercado Livre did not respond within {timeout}s"
-        ) from exc
+        )
     except requests.ConnectionError as exc:
-        raise MercadoLivreConnectionError(
+        transport_error = MercadoLivreConnectionError(
             "Could not connect to Mercado Livre"
-        ) from exc
+        )
     except requests.RequestException as exc:
-        raise MercadoLivreError(f"Mercado Livre request failed: {exc}") from exc
+        transport_error = MercadoLivreError(
+            f"Mercado Livre request failed ({type(exc).__name__}); detail "
+            "withheld because transport errors can embed request headers"
+        )
+
+    if transport_error is not None:
+        raise transport_error
 
     if response.status_code == 403:
         raise MercadoLivreResponseError(

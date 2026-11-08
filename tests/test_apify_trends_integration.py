@@ -7,6 +7,8 @@ token, timeout, connection failure, non-200 responses, malformed JSON,
 an empty dataset, and an unexpected schema.
 """
 
+import io
+
 import requests
 import pytest
 
@@ -292,3 +294,115 @@ def test_fetch_trend_data_raises_on_unexpected_schema(monkeypatch):
 def test_fetch_trend_data_rejects_empty_query():
     with pytest.raises(ValueError):
         fetch_trend_data("   ")
+
+
+# -- transport errors must not carry request headers ---------------------
+
+
+def test_request_exception_message_is_not_forwarded_to_callers(monkeypatch):
+    """A transport error's message must not reach the raised error.
+
+    `requests` embeds the offending header VALUE in some transport
+    errors -- notably `InvalidHeader`, raised offline before any socket
+    opens when a token contains a newline (easy to produce with a
+    double-quoted `.env` value or `Get-Content -Raw`). Interpolating
+    that message leaked `Authorization: Bearer <token>` to every caller.
+
+    Verified reaching stdout through four separate CLI paths before this
+    was fixed, so the guard belongs here at the integration boundary
+    rather than in any one caller.
+    """
+    fixture_value = "not-a-credential-fixture-value"
+    monkeypatch.setattr(
+        apify_trends.src.config, "get_apify_token", lambda: fixture_value + "\n")
+
+    def exploding_post(*args, **kwargs):
+        # Let `requests` reject the header the integration actually built.
+        requests.Request("POST", "https://example.invalid",
+                         headers=kwargs.get("headers") or {}).prepare()
+        raise AssertionError("expected requests to reject the header")
+
+    monkeypatch.setattr(apify_trends.requests, "post", exploding_post)
+
+    with pytest.raises(apify_trends.ApifyTrendsError) as excinfo:
+        apify_trends.fetch_trend_data("fone bluetooth")
+
+    message = str(excinfo.value)
+    assert fixture_value not in message
+    assert "Bearer" not in message
+    # Still diagnosable: the failure mode is named, just not quoted.
+    assert "InvalidHeader" in message
+
+    # The original is NOT chained: see
+    # test_transport_error_is_not_chained_as_cause_or_context. Keeping it
+    # as __cause__ would re-expose the credential through
+    # traceback.format_exception() and logging.exception().
+    assert excinfo.value.__cause__ is None
+
+
+# -- transport errors must not be reachable through the exception chain --
+
+
+def test_transport_error_is_not_chained_as_cause_or_context(monkeypatch):
+    """A sanitized message is not enough: the chain must be severed too.
+
+    EVERY `requests` exception carries `.request.headers`, holding the
+    live `Authorization: Bearer <token>`, and some embed the header value
+    in their message text. So `raise Public(...) from exc` leaks the
+    credential through `traceback.format_exception()` and
+    `logging.exception()` even when `str(public)` is clean.
+
+    `from None` is NOT sufficient -- it clears `__cause__` but leaves
+    `__context__` holding the original, reachable by anything that walks
+    the chain. Clearing `__context__` inside the `except` block is also
+    insufficient: `raise` re-sets it afterwards. The integration
+    therefore raises the sanitized error AFTER the `except` block
+    completes, which is the only option that leaves nothing reachable.
+    """
+    import logging
+    import traceback
+
+    fixture_value = "not-a-credential-fixture-value"
+    monkeypatch.setattr(
+        apify_trends.src.config, "get_apify_token",
+        lambda: fixture_value + "\n")
+
+    def exploding(*args, **kwargs):
+        requests.Request("POST", "https://example.invalid",
+                         headers=kwargs.get("headers") or {}).prepare()
+        raise AssertionError("expected requests to reject the header")
+
+    monkeypatch.setattr(apify_trends.requests, "post", exploding)
+
+    with pytest.raises(apify_trends.ApifyTrendsError) as excinfo:
+        apify_trends.fetch_trend_data("fone bluetooth")
+
+    public = excinfo.value
+
+    # 1. the chain is severed in both directions
+    assert public.__cause__ is None
+    assert public.__context__ is None
+
+    # 2. formatted tracebacks carry nothing
+    formatted = "".join(traceback.format_exception(
+        type(public), public, public.__traceback__))
+    assert fixture_value not in formatted
+    assert "Bearer" not in formatted
+
+    # 3. standard exception logging carries nothing
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    logger = logging.getLogger("test.apify.chain")
+    logger.addHandler(handler)
+    logger.setLevel(logging.ERROR)
+    try:
+        try:
+            raise public
+        except Exception:
+            logger.exception("integration failure")
+    finally:
+        logger.removeHandler(handler)
+    assert fixture_value not in stream.getvalue()
+
+    # 4. safe diagnostics survive -- the failure mode is still named
+    assert "InvalidHeader" in str(public)
