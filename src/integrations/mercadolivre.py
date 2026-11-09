@@ -51,6 +51,7 @@ from dataclasses import dataclass
 import requests
 
 import src.config  # noqa: F401 -- side effect: loads .env before os.environ.get() below
+from src.integrations.mercadolivre_oauth import resolve_access_token
 
 BASE_URL = "https://api.mercadolibre.com"
 SITE_ID = "MLB"
@@ -128,9 +129,21 @@ def _map_item(raw: dict) -> MercadoLivreItem:
 
 
 def _build_headers() -> dict:
-    token = os.environ.get(ACCESS_TOKEN_ENV_VAR)
-    if token:
-        return {"Authorization": f"Bearer {token}"}
+    """Authorization header for one request, or {} when unauthenticated.
+
+    The token is chosen by `resolve_access_token()`, which prefers an
+    explicit environment variable, then the credential file written by
+    the OAuth helper, then the `.env` value. That ordering is what stops
+    a stale `.env` token from overriding a refreshed one; the precedence
+    and its reasoning live in `mercadolivre_oauth.resolve_access_token`
+    and in docs/MERCADO_LIVRE_OAUTH.md.
+
+    Behaviour is unchanged when no credential file exists: the `.env`
+    value is used exactly as before.
+    """
+    resolved = resolve_access_token()
+    if resolved.available:
+        return {"Authorization": f"Bearer {resolved.token}"}
     return {}
 
 

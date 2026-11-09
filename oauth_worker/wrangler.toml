@@ -1,0 +1,32 @@
+# Cloudflare Worker: Mercado Livre OAuth callback relay.
+#
+# Deployed separately from the RAVZ commercial website. This config
+# touches no DNS record and no existing Cloudflare zone: the Worker is
+# served on its own *.workers.dev hostname.
+#
+# No KV, no D1, no R2, no Durable Objects, no secrets -- the relay is
+# stateless and holds no credential, so it needs no binding at all.
+
+name = "ravz-ml-oauth"
+main = "src/callback.js"
+compatibility_date = "2026-11-09"
+
+# The *.workers.dev hostname is the deployment target. Keeping this true
+# and declaring no `routes` is what guarantees the Worker cannot attach
+# itself to ravztech.com.br or any other existing zone.
+workers_dev = true
+
+[vars]
+# Local port the relay redirects to. Must match
+# MERCADO_LIVRE_OAUTH_LOOPBACK_PORT on the machine running the helper.
+# Not a secret: it is a loopback port number, and an invalid value makes
+# the Worker fail closed rather than guess a destination.
+RAVZ_OAUTH_LOOPBACK_PORT = "53682"
+
+[observability]
+# Disabled deliberately. Workers Logs captures invocation metadata and
+# console output; the authorization code travels in the request URL, so
+# the smallest safe configuration is to not retain Worker-side logs at
+# all. The relay contains no console call either -- both halves of
+# "no authorization codes in application logs".
+enabled = false

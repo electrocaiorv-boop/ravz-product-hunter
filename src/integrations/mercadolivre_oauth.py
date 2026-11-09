@@ -66,6 +66,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qsl, urlencode, urlparse
 
 import requests
+from dotenv import dotenv_values, find_dotenv
 
 import src.config  # noqa: F401 -- side effect: loads .env
 
@@ -75,6 +76,23 @@ CLIENT_ID_ENV_VAR = "MERCADO_LIVRE_CLIENT_ID"
 CLIENT_SECRET_ENV_VAR = "MERCADO_LIVRE_CLIENT_SECRET"
 REDIRECT_URI_ENV_VAR = "MERCADO_LIVRE_REDIRECT_URI"
 LOOPBACK_PORT_ENV_VAR = "MERCADO_LIVRE_OAUTH_LOOPBACK_PORT"
+
+# Declared here rather than imported from `mercadolivre.py`: that module
+# imports THIS one for token resolution, and importing back would make a
+# cycle. A test asserts the two constants stay identical.
+ACCESS_TOKEN_ENV_VAR = "MERCADO_LIVRE_ACCESS_TOKEN"
+
+# Where a resolved access token came from. Reported so an operator can
+# tell "the provider is using the refreshed credential" from "the
+# provider is using whatever was pasted into .env months ago".
+TOKEN_SOURCE_ENVIRONMENT = "environment"
+TOKEN_SOURCE_STORED = "stored"
+TOKEN_SOURCE_DOTENV = "dotenv"
+TOKEN_SOURCE_NONE = "none"
+
+# A token expiring within this window is treated as already expired, so
+# one that would die mid-request is not selected.
+EXPIRY_MARGIN_SECONDS = 60
 
 TOKEN_URL = "https://api.mercadolibre.com/oauth/token"
 
@@ -556,6 +574,42 @@ class TokenSet:
         ])
 
 
+@dataclass(frozen=True)
+class ResolvedToken:
+    """Which credential the provider should use, and why.
+
+    `__repr__` is overridden for the same reason as `TokenSet`: this
+    object is handed to the provider on every request, so it must not be
+    able to render a credential into a log line or a traceback.
+    """
+
+    token: str | None
+    source: str
+    detail: str
+    expires_at: str | None = None
+
+    def __repr__(self) -> str:
+        return (f"ResolvedToken(token={'<redacted>' if self.token else None}, "
+                f"source={self.source!r}, expires_at={self.expires_at!r}, "
+                f"detail={self.detail!r})")
+
+    __str__ = __repr__
+
+    @property
+    def available(self) -> bool:
+        return bool(self.token)
+
+    def describe(self) -> str:
+        """Metadata only. Deliberately cannot render the token."""
+        return "\n".join([
+            f"  access token : "
+            f"{'configured (value not shown)' if self.token else 'NOT configured'}",
+            f"  source       : {self.source}",
+            f"  expires_at   : {self.expires_at or 'not recorded'}",
+            f"  reason       : {self.detail}",
+        ])
+
+
 def _utc_now_iso() -> str:
     """Provenance only -- never an input to any score."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -736,6 +790,149 @@ def write_token_file(tokens: TokenSet, path: pathlib.Path = TOKEN_FILE) -> pathl
     return path
 
 
+def resolve_access_token(*, environ=None, token_path=None, dotenv_path=None,
+                         now=None) -> "ResolvedToken":
+    """Decide which access token the marketplace provider should send.
+
+    == Why this exists ==
+
+    The provider reads one variable, `MERCADO_LIVRE_ACCESS_TOKEN`, while
+    `refresh` writes a new token to the stored credential file. Without
+    a precedence rule the two drift apart after the first refresh: the
+    file holds a live token, `.env` holds the dead one, and the provider
+    keeps sending the dead one until a human re-copies it by hand.
+
+    == Precedence, worst consequence first ==
+
+    1. An **explicit process environment variable** wins. `.env` values
+       are injected into `os.environ` by `src.config`, so the two are
+       told apart by comparing against the file's own contents: a value
+       present in the environment but different from (or absent from)
+       `.env` was set by the operator, and an operator override must
+       never be silently ignored.
+    2. A **stored, unexpired credential** beats a `.env` value. This is
+       the fix: the stored file is written by `authorize` and `refresh`,
+       so it is fresher by construction, and a stale pasted token can no
+       longer override a refreshed one.
+    3. The **`.env` value**, which is what the provider used before this
+       existed. Preserved so nothing that works today stops working,
+       and used when the stored token is absent or expired.
+    4. Nothing. Reported as `None` with a reason -- never a blank or a
+       placeholder token.
+
+    A clock is read only to compare against the stored `expires_at`. It
+    selects a credential; it never enters a score. Determinism of the
+    scoring layers is unaffected.
+
+    Defaults are resolved HERE rather than in the signature, so a test
+    that patches `TOKEN_FILE` is actually effective -- a default
+    argument would bind once at definition time.
+    """
+    env = os.environ if environ is None else environ
+    # The RAW value is what gets sent. Stripping is used only to decide
+    # "is it set?" and to compare against `.env`: normalising the value
+    # itself would change existing behaviour, and two regression tests
+    # depend on a trailing newline reaching the header so that the
+    # header-sanitisation path is actually exercised.
+    env_raw = env.get(ACCESS_TOKEN_ENV_VAR) or ""
+    env_value = env_raw.strip()
+    dotenv_value = _dotenv_access_token(dotenv_path)
+    moment = now if now is not None else datetime.now(timezone.utc)
+    path = TOKEN_FILE if token_path is None else token_path
+
+    if env_value and env_value != dotenv_value:
+        return ResolvedToken(
+            token=env_raw, source=TOKEN_SOURCE_ENVIRONMENT,
+            detail=f"{ACCESS_TOKEN_ENV_VAR} is set in the environment; an "
+                   "explicit override takes precedence over the stored "
+                   "credential")
+
+    document = _read_stored_document(path)
+    stored_note = "no stored credential file"
+    if document is not None:
+        usable, expires_at, reason = _stored_token_state(document, moment)
+        if usable:
+            return ResolvedToken(
+                token=str(document["access_token"]).strip(),
+                source=TOKEN_SOURCE_STORED,
+                detail=f"using the stored credential from {path} ({reason})",
+                expires_at=expires_at)
+        stored_note = f"the stored credential at {path} is unusable ({reason})"
+
+    if env_value:
+        return ResolvedToken(
+            token=env_raw, source=TOKEN_SOURCE_DOTENV,
+            detail=f"{stored_note}; falling back to the {ACCESS_TOKEN_ENV_VAR} "
+                   "value from .env")
+
+    return ResolvedToken(
+        token=None, source=TOKEN_SOURCE_NONE,
+        detail=f"{stored_note} and {ACCESS_TOKEN_ENV_VAR} is not configured; "
+               "requests will be unauthenticated")
+
+
+def _dotenv_access_token(path=None) -> str:
+    """The access token recorded in `.env`, or "" -- never raises.
+
+    Read WITHOUT injecting anything into the environment, because the
+    point is to compare against what the environment already holds.
+    """
+    try:
+        resolved = path if path is not None else find_dotenv(usecwd=True)
+        if not resolved:
+            return ""
+        values = dotenv_values(resolved)
+    except OSError:
+        return ""
+    return (values.get(ACCESS_TOKEN_ENV_VAR) or "").strip()
+
+
+def _read_stored_document(path) -> dict | None:
+    """Read the stored credential document, or None.
+
+    MUST NOT raise. A corrupt or unreadable credential file has to
+    degrade to "no stored credential", because raising here would
+    propagate out of `search_products()` as something the orchestrator
+    does not catch -- turning a local file problem into a crash instead
+    of explicit unavailable evidence.
+    """
+    try:
+        target = pathlib.Path(path)
+        if not target.exists():
+            return None
+        document = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def _stored_token_state(document: dict, moment) -> tuple[bool, str | None, str]:
+    """Whether the stored token is usable, plus its expiry and a reason."""
+    token = document.get("access_token")
+    if not token or not isinstance(token, str) or not token.strip():
+        return False, None, "it holds no access_token"
+
+    expires_at = document.get("expires_at")
+    if not expires_at or not isinstance(expires_at, str):
+        # Unknown lifetime. It cannot be shown to be expired, and
+        # inventing an expiry would be fabricating evidence, so the
+        # fresher-by-construction credential is used.
+        return True, None, "lifetime not recorded"
+
+    try:
+        deadline = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return True, expires_at, "lifetime unparseable, so not assumed expired"
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=timezone.utc)
+
+    # A margin, so a token that dies mid-request is treated as already
+    # dead rather than racing the network.
+    if moment + timedelta(seconds=EXPIRY_MARGIN_SECONDS) < deadline:
+        return True, expires_at, f"valid until {expires_at}"
+    return False, expires_at, f"expired or expiring at {expires_at}"
+
+
 def read_refresh_token(path: pathlib.Path = TOKEN_FILE) -> str:
     """Read the stored refresh token, for the refresh subcommand."""
     path = pathlib.Path(path)
@@ -840,9 +1037,10 @@ def _command_authorize(wait_seconds: float) -> int:
     path = write_token_file(tokens)
     print(f"\nAuthorization COMPLETE. Credentials written to {path}")
     print(tokens.describe())
-    print("\nNext: open that file, copy the access_token value into .env as")
-    print("  MERCADO_LIVRE_ACCESS_TOKEN=<value>")
-    print("Nothing was printed here that could be pasted into a ticket.")
+    print("\nThe marketplace provider reads this file directly -- there is")
+    print("nothing to copy into .env. What it will use on the next request:")
+    print(resolve_access_token().describe())
+    print("\nNothing was printed here that could be pasted into a ticket.")
     return 0
 
 
@@ -858,6 +1056,8 @@ def _command_refresh() -> int:
     print(tokens.describe())
     print("\nThe previous refresh token is now invalid (Mercado Livre rotates")
     print("it on every refresh). The stored file already holds the new one.")
+    print("\nWhat the marketplace provider will use on the next request:")
+    print(resolve_access_token().describe())
     return 0
 
 

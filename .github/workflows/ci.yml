@@ -99,6 +99,22 @@ jobs:
       - name: Tests
         run: pytest -q
 
+      - name: Set up Node
+        # Only for the OAuth relay's own tests. The relay is a Cloudflare
+        # Worker, so its behaviour cannot be exercised from pytest; the
+        # cross-language CONTRACT is checked by pytest
+        # (tests/test_oauth_worker_contract.py), and this step runs the
+        # Worker's behavioural suite so it gates too.
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: OAuth relay tests (Cloudflare Worker)
+        # Node's built-in test runner. No dependencies are installed:
+        # oauth_worker/package.json declares none, by design.
+        working-directory: oauth_worker
+        run: npm test
+
       - name: Whitespace and conflict-marker check (PR range)
         # Equivalent to `git diff --check`, but against the PR's net change --
         # nothing is ever staged in CI, so the local form would be a no-op.
