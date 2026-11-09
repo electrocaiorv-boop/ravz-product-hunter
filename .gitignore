@@ -1,4 +1,10 @@
 .env
+
+# Credentials obtained by the Mercado Livre OAuth helper
+# (src/integrations/mercadolivre_oauth.py writes the token set here).
+# Never commit: this directory holds live access and refresh tokens.
+.secrets/
+
 .venv/
 venv/
 __pycache__/
