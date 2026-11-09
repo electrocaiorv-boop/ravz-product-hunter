@@ -1671,3 +1671,101 @@ def test_only_ready_is_publishable():
         assert result.classification is None
     assert compose().publishable is True
     assert compose().classification is not None
+
+
+# -- withheld reasons must be provider-neutral and cause-honest ----------
+
+
+# Provider and environment names that must never appear in this layer.
+# CLAUDE.md: `opportunity_integration.py` is composition-only and
+# provider-neutral -- nothing provider-specific leaks past the
+# integration boundary.
+FORBIDDEN_IN_REASONS = (
+    "Mercado Livre", "MercadoLivre", "mercadolibre",
+    "Apify", "apify", "Google Trends",
+    "this environment", "unreachable",
+)
+
+
+def test_no_withheld_reason_names_a_provider_or_environment():
+    """A withheld reason states the domain's own finding, nothing more.
+
+    The Competition adapter used to hardcode "(Mercado Livre search is
+    unreachable in this environment)" for EVERY withheld Competition
+    score -- emitted identically for a 403, a timeout, a data error, and
+    a supplied-but-too-thin result. It asserted a cause it could not
+    know, and named a provider inside a provider-neutral layer.
+
+    "Unreachable" was also factually wrong for the 403 case: the request
+    reaches Mercado Livre's gateway and is refused by policy. The
+    specific, true cause belongs to the orchestrator's `ProviderCall`,
+    which observed the failure; the adapter only knows that no usable
+    evidence arrived.
+    """
+    results = [
+        analyze_competition(
+            build_competition_signals("q", marketplace_items=None),
+            requested_limit=10,
+        ),
+        analyze_demand(build_demand_signals("q", "BR")),
+    ]
+    reasons = []
+    for domain_result in results:
+        composed = compose_opportunity(
+            "P",
+            competition_result=results[0],
+            demand_result=results[1],
+        )
+        reasons.extend(
+            c.withheld_reason for c in composed.components
+            if c.withheld_reason
+        )
+
+    assert reasons, "expected at least one withheld reason to inspect"
+    for reason in reasons:
+        for forbidden in FORBIDDEN_IN_REASONS:
+            assert forbidden not in reason, (forbidden, reason)
+
+
+def test_competition_withheld_reason_states_only_what_is_known():
+    """It reports missing evidence without diagnosing why."""
+    result = analyze_competition(
+        build_competition_signals("q", marketplace_items=None),
+        requested_limit=10,
+    )
+    composed = compose_opportunity("P", competition_result=result)
+    competition = next(
+        c for c in composed.components if c.name == "competition")
+
+    assert competition.available is False
+    assert competition.raw_score is None
+    reason = competition.withheld_reason
+    assert reason is not None
+    assert "could not compute a score" in reason
+    assert "no usable" in reason and "listing evidence" in reason
+
+
+def test_correcting_the_reason_changed_no_score():
+    """The wording fix is a reporting change, not a scoring change."""
+    result = analyze_competition(
+        build_competition_signals("q", marketplace_items=None),
+        requested_limit=10,
+    )
+    composed = compose_opportunity("P", competition_result=result)
+    competition = next(
+        c for c in composed.components if c.name == "competition")
+
+    # Unchanged semantics: still unavailable, still None, contributing
+    # zero weight, still a commercial requirement that withholds the
+    # classification.
+    #
+    # `counted` is NOT the field to assert here: it records whether a
+    # component won its evidence family's representative election, and
+    # Competition belongs to no family, so it stays True. The zero
+    # contribution comes from `available=False` via `effective_weight`.
+    assert competition.opportunity_score is None
+    assert competition.weighted_contribution is None
+    assert competition.effective_weight == 0.0
+    assert "competition" in composed.missing_commercial_requirements
+    assert composed.readiness == READINESS_INCOMPLETE_EVIDENCE
+    assert composed.classification is None

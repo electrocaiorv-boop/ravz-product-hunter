@@ -42,6 +42,9 @@ from src.margin_analysis import analyze_margin
 from src.margin_models import MarginInputs
 from src.models import ComponentScores, Product
 from src.opportunity_integration import compose_opportunity
+from src.agent.contracts import AgentRequest
+from src.agent.runner import run_agent
+from src.llm_client import describe_availability
 from src.orchestrator import OrchestrationRequest, run_opportunity_analysis
 from src.risk_analysis import analyze_risk
 from src.risk_models import RiskInputs
@@ -92,10 +95,11 @@ def parse_non_empty_text(raw: str) -> str:
 
 
 def parse_menu_choice(raw: str) -> int:
-    """Validate that raw text is one of the main menu options (1-11)."""
+    """Validate that raw text is one of the main menu options (1-12)."""
     text = raw.strip()
-    if text not in {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"}:
-        raise ValueError("choose a number from 1 to 11")
+    if text not in {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11",
+                    "12"}:
+        raise ValueError("choose a number from 1 to 12")
     return int(text)
 
 
@@ -1353,7 +1357,7 @@ INTEGRATED_DEMO_BANNER = (
     "It does NOT collect or fetch anything itself. There is no automated\n"
     "end-to-end pipeline yet: Margin, Supplier, Logistics and Risk still\n"
     "depend on manually supplied evidence, and Mercado Livre search (which\n"
-    "Competition needs) is unreachable in this environment.\n"
+    "Competition needs) is refused with HTTP 403 for this caller.\n"
     "\n"
     "Rather than make you retype every field from options 3-9, this option\n"
     "runs the REAL domain engines over three clearly-labelled ILLUSTRATIVE\n"
@@ -1788,6 +1792,122 @@ def run_orchestrated_analysis(input_func=input) -> None:
     print(format_orchestration_report(result))
 
 
+AGENT_BANNER = (
+    "Phase 12B adds a BOUNDED RESEARCH AGENT. A language model decides\n"
+    "WHAT EVIDENCE TO LOOK AT; the deterministic engines decide WHAT IT\n"
+    "MEANS. Every number below still comes from a domain engine and the\n"
+    "Phase 11 composition layer -- the model never calculates, re-weights\n"
+    "or overrides a score, and any figure it writes that does not trace\n"
+    "back to the analysis causes its explanation to be discarded.\n"
+    "\n"
+    "The agent may call four read-only research tools within a fixed\n"
+    "budget of tool calls, turns, tokens, estimated cost and wall-clock\n"
+    "time. It cannot publish a listing, spend money, or write anywhere.\n"
+    "\n"
+    "Requires the optional 'anthropic' package and ANTHROPIC_API_KEY.\n"
+    "Without them this option reports UNAVAILABLE; options 1-11 are\n"
+    "unaffected."
+)
+
+
+def format_agent_report(result) -> str:
+    """Render an AgentResult. Presentation only -- no scoring, no math."""
+    lines = [
+        "=" * 70,
+        "RESEARCH AGENT (Phase 12B)",
+        "=" * 70,
+        f"Product: {result.request.product_name}",
+        f"Query:   '{result.request.query}'",
+        f"Outcome: {result.outcome.upper()}",
+    ]
+
+    if result.unavailable_reason:
+        # State the absence explicitly. A reader who skims an
+        # "unavailable" report must not be left wondering whether some
+        # partial verdict was computed anyway.
+        lines += [
+            "",
+            result.unavailable_reason,
+            "",
+            "The agent did not run, so no score, classification or",
+            "recommendation is implied. Nothing was estimated or assumed",
+            "in its place.",
+            "=" * 70,
+        ]
+        return "\n".join(lines)
+
+    lines += ["", "Research steps the agent chose (allowlist-bounded):"]
+    if not result.tool_calls:
+        lines.append("  (none)")
+    for call in result.tool_calls:
+        status = "ok" if call.accepted else f"REJECTED:{call.rejected_reason}"
+        suffix = "  [evidence reused]" if call.reused_evidence else ""
+        lines.append(f"  [{status:22}] {call.name}{suffix}")
+        if call.detail and not call.accepted:
+            lines.append(f"       {call.detail}")
+
+    lines += [
+        "",
+        f"Budget used: {len(result.accepted_tool_calls)}"
+        f"/{result.request.budget.max_tool_calls} tool calls, "
+        f"{result.usage.llm_turns}/{result.request.budget.max_llm_turns} turns",
+    ]
+
+    if result.evidence_requests:
+        lines += ["", "Evidence the agent is REQUESTING (never inventing):"]
+        for request in result.evidence_requests:
+            lines.append(f"  {request.domain}: {', '.join(request.needed)}")
+            lines.append(f"      why: {request.why}")
+
+    if result.analysis is not None:
+        lines += ["", "-" * 70, "DETERMINISTIC ANALYSIS (engine output)",
+                  "-" * 70, format_opportunity_report(result.analysis)]
+    else:
+        lines += ["", "No deterministic analysis was produced, so no score,",
+                  "classification or recommendation is implied."]
+
+    lines += ["", "-" * 70, "AGENT EXPLANATION", "-" * 70,
+              result.explanation or "(none)"]
+
+    if result.learning_notes:
+        lines += ["", "-" * 70, "LEARNING MODE", "-" * 70,
+                  result.learning_notes]
+
+    if result.notes:
+        lines += ["", "Agent notes:"]
+        lines += [f"  - {note}" for note in result.notes]
+
+    lines.append("=" * 70)
+    return "\n".join(lines)
+
+
+def run_agent_analysis(input_func=input) -> None:
+    """Phase 12B: one bounded agent research run.
+
+    Prompts only for a product name, a query and whether to include
+    Learning mode. It never prompts for the manually-investigated
+    domains: the agent's correct response to missing evidence is to
+    REQUEST it, which it does via `declare_missing_evidence`.
+    """
+    print("\nResearch Agent (Phase 12B)")
+    print("-" * 70)
+    print(AGENT_BANNER)
+    print("-" * 70)
+    print()
+    print(describe_availability())
+
+    product_name = ask("\nProduct name: ", parse_non_empty_text, input_func)
+    query = ask("Search query: ", parse_non_empty_text, input_func)
+    learning = ask("Include Learning mode? (y/n, blank = no): ",
+                   parse_optional_bool, input_func)
+
+    request = AgentRequest(product_name=product_name, query=query,
+                           learning_mode=bool(learning))
+    result = run_agent(request)
+
+    print()
+    print(format_agent_report(result))
+
 def main() -> None:
     print("RAVZ Product Hunter")
     print("1. Manual Product Analyzer")
@@ -1801,8 +1921,9 @@ def main() -> None:
     print("9. Analyze Risk")
     print("10. Integrated Opportunity Analysis")
     print("11. Orchestrated Opportunity Analysis (Phase 12A)")
+    print("12. Research Agent (Phase 12B)")
 
-    choice = ask("Choose an option (1-11): ", parse_menu_choice)
+    choice = ask("Choose an option (1-12): ", parse_menu_choice)
 
     if choice == 1:
         run_manual_analyzer()
@@ -1824,8 +1945,10 @@ def main() -> None:
         run_risk_analysis()
     elif choice == 10:
         run_integrated_opportunity_analysis()
-    else:
+    elif choice == 11:
         run_orchestrated_analysis()
+    else:
+        run_agent_analysis()
 
 
 if __name__ == "__main__":

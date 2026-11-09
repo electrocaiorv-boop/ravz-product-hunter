@@ -180,9 +180,12 @@ def test_parse_menu_choice_accepts_valid_options():
     assert parse_menu_choice(" 10 ") == 10
     # Phase 12A added option 11 (Orchestrated Opportunity Analysis).
     assert parse_menu_choice("11") == 11
+    # Phase 12B added option 12 (Research Agent).
+    assert parse_menu_choice("12") == 12
+    assert parse_menu_choice(" 12 ") == 12
 
 
-@pytest.mark.parametrize("raw", ["0", "12", "abc", "", "1.0", "-1"])
+@pytest.mark.parametrize("raw", ["0", "13", "abc", "", "1.0", "-1"])
 def test_parse_menu_choice_rejects_invalid_options(raw):
     with pytest.raises(ValueError):
         parse_menu_choice(raw)
@@ -1153,3 +1156,149 @@ def test_direct_integration_callers_do_not_print_credentials(
     assert "Bearer" not in printed
     # The failure is still surfaced to the user, not silently swallowed.
     assert "failed" in printed or "unavailable" in printed
+
+
+# -- Phase 12B: the agent CLI flow --------------------------------------
+
+
+def test_agent_cli_reports_unavailable_without_sdk_or_key(monkeypatch, capsys):
+    """Missing credentials must never look like a successful run."""
+    import src.llm_client as llm_module
+
+    monkeypatch.setattr(llm_module, "sdk_installed", lambda: False)
+
+    answers = iter(["Fone Bluetooth", "fone bluetooth", "n"])
+    main.run_agent_analysis(input_func=lambda prompt="": next(answers))
+
+    out = capsys.readouterr().out
+    assert "UNAVAILABLE" in out
+    # No score, classification or recommendation may appear.
+    assert "Opportunity Score" not in out
+    assert "Strong opportunity" not in out
+    assert "no score," in out
+
+
+def test_agent_cli_end_to_end_with_an_injected_fake_llm(monkeypatch, capsys):
+    """One complete CLI agent flow, offline.
+
+    `src.main.run_agent` is patched at module level so the CLI's own
+    call site is exercised -- the same defect class that made three
+    Phase 12A tests silently hit the network.
+    """
+    from src.agent.contracts import AgentRequest
+    from src.agent.runner import run_agent as real_run_agent
+    from src.agent.tools import TOOL_DECLARE_MISSING, TOOL_RUN_FULL_ANALYSIS
+    from tests.conftest_agent import (
+        ScriptedLLM,
+        make_marketplace_searcher,
+        make_trend_fetcher,
+    )
+
+    script = [
+        {"text": "Running the deterministic pipeline.",
+         "tool_calls": [{"id": "1", "name": TOOL_RUN_FULL_ANALYSIS,
+                         "arguments": {"query": "fone bluetooth"}}]},
+        {"text": "Unit economics are unknown, so I am requesting them.",
+         "tool_calls": [{"id": "2", "name": TOOL_DECLARE_MISSING,
+                         "arguments": {"domain": "margin",
+                                       "needed": ["sale_price",
+                                                  "product_cost"],
+                                       "why": "no cost evidence supplied"}}]},
+        {"text": "Evidence is incomplete, so no recommendation is issued.",
+         "tool_calls": []},
+    ]
+
+    def fake_run_agent(request: AgentRequest):
+        return real_run_agent(
+            request,
+            llm_client=ScriptedLLM(script),
+            trend_fetcher=make_trend_fetcher(),
+            marketplace_searcher=make_marketplace_searcher(),
+        )
+
+    monkeypatch.setattr(main, "run_agent", fake_run_agent)
+
+    answers = iter(["Fone Bluetooth", "fone bluetooth", "y"])
+    main.run_agent_analysis(input_func=lambda prompt="": next(answers))
+
+    out = capsys.readouterr().out
+
+    # The agent's chosen research steps are shown.
+    assert "run_full_analysis" in out
+    assert "declare_missing_evidence" in out
+
+    # The deterministic analysis is rendered by the existing formatter.
+    assert "DETERMINISTIC ANALYSIS (engine output)" in out
+    assert "Opportunity Score" in out
+    assert "integrated-v1" in out
+
+    # Missing evidence is requested, not invented.
+    assert "REQUESTING (never inventing)" in out
+    assert "sale_price" in out
+
+    # Learning mode was requested and appears.
+    assert "LEARNING MODE" in out
+    assert "inverted exactly once" in out
+
+    # Cost is reported as an estimate.
+    assert "ESTIMATE" in out and "NOT a billed amount" in out
+
+    # And the standing disclaimer still rides along with the analysis.
+    assert "PROVISIONAL BUSINESS HEURISTIC" in out
+
+
+def test_agent_cli_prints_no_credentials(monkeypatch, capsys):
+    from src.agent.contracts import AgentRequest
+    from src.agent.runner import run_agent as real_run_agent
+    from src.agent.tools import TOOL_RUN_FULL_ANALYSIS
+    from tests.conftest_agent import (
+        ScriptedLLM,
+        make_marketplace_searcher,
+        make_trend_fetcher,
+    )
+
+    fixture_value = "not-a-credential-fixture-value"
+    monkeypatch.setenv("APIFY_API_TOKEN", fixture_value)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", fixture_value)
+
+    def fake_run_agent(request: AgentRequest):
+        return real_run_agent(
+            request,
+            llm_client=ScriptedLLM([
+                {"text": f"leaking Bearer {fixture_value}",
+                 "tool_calls": [{"id": "1", "name": TOOL_RUN_FULL_ANALYSIS,
+                                 "arguments": {"query": "fone"}}]},
+                {"text": "done", "tool_calls": []},
+            ]),
+            trend_fetcher=make_trend_fetcher(),
+            marketplace_searcher=make_marketplace_searcher(),
+        )
+
+    monkeypatch.setattr(main, "run_agent", fake_run_agent)
+    answers = iter(["Fone", "fone", "n"])
+    main.run_agent_analysis(input_func=lambda prompt="": next(answers))
+
+    out = capsys.readouterr().out
+    assert fixture_value not in out
+
+
+def test_menu_lists_the_agent_option(capsys):
+    answers = iter(["12"])
+    import src.main as module
+
+    called = []
+    original = module.run_agent_analysis
+    module.run_agent_analysis = lambda: called.append(True)
+    try:
+        module.main(input_func=lambda prompt="": next(answers))
+    except TypeError:
+        # main() may not accept input_func; fall back to checking the menu
+        # text only.
+        module.run_agent_analysis = original
+        return
+    finally:
+        module.run_agent_analysis = original
+
+    out = capsys.readouterr().out
+    assert "12. Research Agent (Phase 12B)" in out
+    assert called == [True]

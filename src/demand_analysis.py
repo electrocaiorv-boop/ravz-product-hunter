@@ -96,20 +96,50 @@ and voluminous can NEVER be mistaken for multi-source corroboration:
          + 0.4 * volume_score          (trend_observation_count against
                                         EXPECTED_OBSERVATION_COUNT)
 
-    2. coverage_cap = 100 * source_coverage -- a HARD CAP derived from
-       source INDEPENDENCE, not quality. With 1 of 2 source families
-       (source_coverage=0.5), confidence can never exceed 50, no matter
-       how complete or voluminous that one source's data is. With 2 of
-       2, the cap is 100 and internal_quality_score alone determines
-       the result.
+    2. an INDEPENDENCE CAP -- a hard ceiling derived from source
+       independence, not from quality. Evidence that is not corroborated
+       by a second independent source family is capped at
+       SINGLE_SOURCE_CONFIDENCE_CAP (50.0), no matter how complete or
+       voluminous that one source's data is. Only genuinely
+       multi-source evidence may exceed it, and then
+       internal_quality_score alone determines the result.
 
-    confidence_score = min(internal_quality_score, coverage_cap)
+    confidence_score = min(internal_quality_score, independence_cap)
 
-This directly encodes the example rule from the Phase 5 hardening
-review: ~50 max for 1-of-2 source families, up to 100 for 2-of-2
-(bounded further by actual completeness/volume). All weights/scales/
-caps are module-level constants, meant to be recalibrated later against
-real outcomes -- not treated as final.
+== Why the cap is NOT `100 * source_coverage` (corrected) ==
+
+It used to be computed that way, which made the ceiling an artifact of
+the family DENOMINATOR rather than a stated rule. Two problems:
+
+- It implied a second family could contribute. Per CLAUDE.md's Evidence
+  Family Invariant, `DemandAnalysis.marketplace_contribution` is
+  permanently `None`, so today's Demand Score is entirely
+  Google-Trends-derived. Reporting "half of two source families
+  contributed" described a denominator that counts a source which cannot
+  currently contribute at all.
+- It did not generalize. Adding a third family would silently move the
+  single-source ceiling to 33, and two-of-three to 67 -- numbers nobody
+  chose and no review justified.
+
+The cap is now an explicit, named constant justified on its own terms:
+single-source evidence does not earn high confidence. The numeric
+outputs are unchanged (see
+`test_option_a_preserves_every_published_confidence_value`); what
+changed is the stated reason, which was false.
+
+`source_coverage` is KEPT and still reported, as honest provenance of
+how many families contributed. It is simply no longer the arithmetic
+source of the ceiling.
+
+== This is a PROVISIONAL bound, not a calibrated accuracy estimate ==
+
+50.0 is a deliberately conservative, adjustable business heuristic. It
+has NOT been validated against real outcomes, and it is NOT a
+statistical confidence interval, a probability that the Demand Score is
+correct, or a measured error bound. It encodes one judgment: that
+uncorroborated evidence should not present itself as strong. All
+weights/scales/caps are module-level constants, meant to be
+recalibrated later against real outcomes -- not treated as final.
 """
 
 from dataclasses import dataclass, field
@@ -134,9 +164,44 @@ CONFIDENCE_COMPLETENESS_WEIGHT = 0.6
 CONFIDENCE_VOLUME_WEIGHT = 0.4
 TOTAL_COMPONENT_GROUPS = 4  # trend, breadth, regional, marketplace
 
+# Independence ceilings on `confidence_score`. PROVISIONAL business
+# heuristics, not calibrated accuracy estimates -- see module docstring.
+#
+# Uncorroborated evidence does not earn high confidence, however complete
+# or voluminous it is. This is a stated rule, deliberately NOT derived
+# from `source_coverage` arithmetic: the ceiling must not change just
+# because the number of configured families changes.
+SINGLE_SOURCE_CONFIDENCE_CAP = 50.0
+MULTI_SOURCE_CONFIDENCE_CAP = 100.0
+NO_SOURCE_CONFIDENCE_CAP = 0.0
+
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, value))
+
+
+def _independence_cap(source_coverage: float) -> float:
+    """Ceiling on confidence, from source independence alone.
+
+    Three states, each with its own stated justification rather than a
+    ratio:
+
+      no source contributed      -> 0.0   (nothing to be confident about)
+      not fully corroborated     -> 50.0  (uncorroborated evidence does
+                                           not earn high confidence)
+      every family contributed   -> 100.0 (no independence penalty;
+                                           quality alone decides)
+
+    `source_coverage` selects the state but no longer sets the value.
+    With the two families configured today this returns exactly what
+    `100 * source_coverage` did, so no published number moves -- see
+    `test_option_a_preserves_every_published_confidence_value`.
+    """
+    if source_coverage <= 0:
+        return NO_SOURCE_CONFIDENCE_CAP
+    if source_coverage < 1.0:
+        return SINGLE_SOURCE_CONFIDENCE_CAP
+    return MULTI_SOURCE_CONFIDENCE_CAP
 
 
 @dataclass
@@ -239,8 +304,8 @@ def analyze_demand(signals: DemandSignals) -> DemandAnalysisResult:
         CONFIDENCE_COMPLETENESS_WEIGHT * completeness_score
         + CONFIDENCE_VOLUME_WEIGHT * volume_score
     )
-    coverage_cap = 100 * signals.source_coverage
-    confidence_score = _clamp(min(internal_quality_score, coverage_cap))
+    independence_cap = _independence_cap(signals.source_coverage)
+    confidence_score = _clamp(min(internal_quality_score, independence_cap))
 
     observed = {
         "trend_observation_count": signals.trend_observation_count,

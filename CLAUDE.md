@@ -34,15 +34,15 @@ No function may produce a probability from these scores.
 
 ## Current State
 
-**Phase 12A is implemented and under review.** Phases 1–11 are committed;
-the 12A orchestration foundation (`src/orchestrator.py`) is on a feature
-branch pending approval, per Git Discipline below. The full suite passes
-(867 tests).
+**Phase 12B is implemented and under review.** Phases 1–12A are merged
+into `main` (12A merge commit `f3fe04f`); the 12B agentic control layer
+(`src/agent/`, `src/llm_client.py`) is on a feature branch pending
+approval, per Git Discipline below. The full suite passes (1055 tests)
+with **no `anthropic` package and no API key installed** — agent mode
+reports itself unavailable rather than degrading.
 
-**Phase 12B is next: Agentic Control Layer.** It is gated on 12A being
-stable and fully tested. See "Phase 12 is staged: 12A then 12B" below
-before writing any code for it — the LLM may decide *what to look at*,
-never *what the evidence means*.
+**Remaining work is non-agentic:** database/history, n8n automation,
+notifications, continuous improvement.
 
 Completed:
 
@@ -60,12 +60,13 @@ Completed:
 | 10 | Deterministic Risk Analysis |
 | 11 | Integrated Opportunity composition layer |
 | 12A | Deterministic orchestration (`src/orchestrator.py`) |
+| 12B | Bounded agentic control layer (`src/agent/`, `src/llm_client.py`) |
 
-Remaining work, in order: **Phase 12B (agentic control layer)**, then database/history, n8n automation, notifications, continuous improvement.
+Remaining work, in order: database/history, n8n automation, notifications, continuous improvement.
 
 Two numbering systems exist in this repo and must not be conflated:
 
-- **Phase numbers** (1–11 and 12A done, 12B next) — used by commit messages, doc section headers and module docstrings. This is the working numbering.
+- **Phase numbers** (1–11, 12A and 12B done) — used by commit messages, doc section headers and module docstrings. This is the working numbering.
 - **Roadmap step numbers** (1–14 in `README.md`) — the original plan. Orchestration is step 10 there. Phases do not map 1:1 onto steps; several phases layer onto a single step.
 
 When referring to work, use **phase numbers**.
@@ -85,8 +86,8 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1     # PowerShell activation
 pip install -r requirements.txt
 
-python -m src.main               # CLI entry point (menu options 1-11)
-python -m pytest -v              # full suite (867 tests, ~1s)
+python -m src.main               # CLI entry point (menu options 1-12)
+python -m pytest -v              # full suite (1055 tests, ~1s)
 ```
 
 Bash (Git Bash / WSL / CI) activates differently:
@@ -320,6 +321,8 @@ Blockers must be surfaced namespaced by the domain that found them, outside the 
 - **`opportunity_integration.py` is composition-only** — imports only the contract.
 - **Adapters translate; they do not recompute.** They must not re-derive domain scoring, perform I/O, guess missing values, mutate the result they are given, invent confidence, or collapse one domain's evidence semantics into another's.
 - **The orchestrator may import domains and integrations. Domains must never import the orchestrator.** Layering is one-directional. It lives at `src/orchestrator.py` (not the empty root `agents/`) so the invariant checker, which scans only `src/`, covers it.
+- **`src/agent/` sits above the orchestrator and may import it. Nothing below may import the agent.** The agent package must never import the pure opportunity contract module — enforced by an AST test — so it cannot assemble a result without the composition engine. It performs no arithmetic on scores: a second AST test rejects `100 - x` inversions and unexplained fractional literals anywhere in the package.
+- **`src/llm_client.py` is the only module permitted to import `anthropic`**, and the SDK is an optional dependency. Nothing else may assume a model is available.
 - `main.py` is presentation only: no scoring math, no HTTP.
 
 Wall-clock, randomness and I/O must not enter any analysis or composition layer. `datetime` may appear only as provenance (e.g. `retrieved_at`), never as a scoring input.
@@ -371,9 +374,14 @@ integrations -> domain engines -> compose_opportunity()
 
 Build this first. A deterministic foundation keeps any later behavior change attributable to the right layer.
 
-#### Phase 12B — Agentic Control Layer
+#### Phase 12B — Agentic Control Layer (IMPLEMENTED)
 
-**May be added only after Phase 12A is stable and fully tested.**
+Lives in `src/agent/` with the optional client in
+`src/llm_client.py`. Four read-only research tools, a strict
+allowlist with in-code argument validation, budgets for tool
+calls / turns / tokens / estimated cost / wall-clock, untrusted-
+evidence fencing, and a provenance guard that discards any
+explanation containing a figure absent from the analysis.
 
 The LLM **MAY**:
 
