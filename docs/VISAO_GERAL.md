@@ -1,7 +1,7 @@
 # RAVZ Product Hunter — Visão geral do projeto
 
 > Documento vivo. Atualizar a cada fase: estado, fases, bloqueios e próximos passos.
-> **Última atualização:** 18/11/2026 (PR #5 — OAuth do Mercado Livre + Fase 13 — mesclado na `main`, merge commit `0f2cb6d`)
+> **Última atualização:** 18/11/2026 (permissões do app no DevCenter revisadas e reautorizadas; pendência de segurança do OAuth encerrada)
 
 Repositório: https://github.com/electrocaiorv-boop/ravz-product-hunter
 Pasta local: `C:\Users\caios\ravz-product-hunter`
@@ -126,7 +126,7 @@ A faixa de preço do "Pro 4" (R$ 10 a R$ 3.382 dentro do mesmo `product_id`) é 
 ### OAuth
 - Worker publicado: `https://ravz-ml-oauth.ravztech.workers.dev` (callback `/api/mercadolivre/callback`), sem DNS do ravztech.com.br.
 - Conta autorizada; token salvo em `.secrets/` (fora do git). Access token dura ~6 h: `python -m src.integrations.mercadolivre_oauth refresh`.
-- **Pendência de segurança:** o token veio com escopos de escrita. O Product Hunter só precisa de leitura — restringir permissões do app no DevCenter e reautorizar.
+- **Permissões do app revisadas no DevCenter em 18/11/2026 e reautorizado.** Hoje o app só tem acesso a: "Usuários" (leitura e escrita — campo obrigatório do próprio Mercado Livre, não editável) e "Publicação e sincronização" (leitura). Todo o resto, sem acesso. O escopo `write`/`admin:*:read-write` que aparecia no token vem exclusivamente do campo obrigatório de Usuários; "Publicação e sincronização" (o que afetaria anúncios/estoque) é só leitura. **Pendência de segurança encerrada** — o Product Hunter nunca publica nem escreve em anúncio, e o escopo de escrita restante não é algo que o projeto escolheu nem pode remover.
 
 ### Correções de 17/11/2026 (não commitadas, aguardando revisão)
 - Testes de handoff de token tinham vencimento fixo (09/11/2026) e passaram a falhar depois dessa data → relógio fixado nos testes.
@@ -145,16 +145,18 @@ A faixa de preço do "Pro 4" (R$ 10 a R$ 3.382 dentro do mesmo `product_id`) é 
 1. **PR #4** (README curto + `docs/PHASES.md` + Fases 12A-12B no LEARNING) — próximo passo. Conflita com o que a Fase 13 mesclou em `docs/LEARNING.md` (ambos só adicionam conteúdo, mas no mesmo ponto do fim do arquivo); confirmado por simulação local de merge em 18/11/2026. Vai precisar de rebase/resolução do conflito antes de mesclar.
 2. **Melhoria futura na tabela por produto (Fase 13):** hoje "loja oficial" é sim/não **por produto** (sim se QUALQUER oferta daquele produto tiver `official_store_id`) — com isso, "sim" aparece quase sempre, mesmo quando a maioria das ofertas é de revendedor comum. Falta: (a) quantas das N ofertas daquele produto são de loja oficial (ex.: "2 de 72"), e (b) se a oferta de **menor preço** é de loja oficial ou não — essa é a pergunta que decide se vale tentar competir por preço ou se o concorrente mais barato já é a marca. Nenhuma das duas precisa de requisição nova; é reprocessar `product_table`/`ProductObservation` com os dados já coletados.
 3. **Fase 14 (proposta)** — Fornecedores nacionais de dropshipping: pesquisar quem tem catálogo/API no Brasil e ligar à Fase 8, cruzando produto ↔ fornecedor ↔ custo ↔ prazo, com margem automática.
-4. Permissões só de leitura no app do Mercado Livre (o token atual veio com escopo de escrita — ver §5).
-5. Primeira chamada real do agente Anthropic.
-6. Análise comercial completa de um produto real (custos, taxas e frete atualizados) e teste de venda com capital mínimo.
-7. Depois: banco de dados e histórico, pesquisa em lote e ranking, n8n e alertas.
+4. Primeira chamada real do agente Anthropic.
+5. Análise comercial completa de um produto real (custos, taxas e frete atualizados) e teste de venda com capital mínimo.
+6. Depois: banco de dados e histórico, pesquisa em lote e ranking, n8n e alertas.
+
+~~Permissões só de leitura no app do Mercado Livre~~ — revisado e reautorizado em 18/11/2026, ver §5. Pendência encerrada.
 
 ## 7. Regra de trabalho
 
 Cada fase tem início e escopo definidos, implementação, testes, critério objetivo de aprovação, documentação e encerramento formal. Nada de commit ou push sem aprovação. Este documento é atualizado ao abrir e ao encerrar cada fase.
 
 ## Histórico deste documento
+- 18/11/2026 (permissões) — Caio revisou e reautorizou as permissões do app no DevCenter: só "Usuários" (leitura e escrita, campo obrigatório do ML, não editável) e "Publicação e sincronização" (leitura); resto sem acesso. Pendência de segurança do §5 encerrada; removida de §6.
 - 18/11/2026 (merge) — PR #5 revisado por Caio: CI verde, sem conflito com a `main`. Mesclado com merge commit (sem squash) em `0f2cb6d`, branch remota mantida. OAuth do Mercado Livre e Fase 13 agora na `main`. Checado por simulação local: PR #4 vai conflitar com a Fase 13 em `docs/LEARNING.md` (ambos só adicionam, no mesmo ponto do fim do arquivo) — registrado em §6 como próximo passo, PR #4 não foi tocado.
 - 18/11/2026 (aprovação) — Caio aprovou a Fase 13. Commitada em 3 partes (correções do Passo 0, `.gitattributes`, Fase 13) e enviada em PR para `main` (merge pendente de revisão). Registrada em §6 a melhoria futura: % de ofertas de loja oficial por produto e se a oferta mais barata é de loja oficial.
 - 18/11/2026 — Correção de lógica revisada pelo usuário antes da aprovação: `seller_concentration` por produto estava invertida para produtos de 1 vendedor (lia como "zero concentração"). Corrigida para `1/nº_vendedores` (HHI de participação igual), mapeado `official_store_id`, adicionada tabela observada por produto. Suíte 1310 passed + 1 skipped. `.gitattributes` adicionado (LF) depois de arquivos terem sido salvos em CRLF nesta sessão; todos convertidos de volta. Nova execução real: `competition_score=31.54` (antes: 14.47). Ainda aguardando aprovação para commit/push.
