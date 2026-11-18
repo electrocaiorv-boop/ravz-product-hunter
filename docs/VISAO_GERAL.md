@@ -1,7 +1,7 @@
 # RAVZ Product Hunter — Visão geral do projeto
 
 > Documento vivo. Atualizar a cada fase: estado, fases, bloqueios e próximos passos.
-> **Última atualização:** 18/11/2026 (Fase 13 aprovada e concluída; OAuth do Mercado Livre implantado e autorizado)
+> **Última atualização:** 18/11/2026 (PR #5 — OAuth do Mercado Livre + Fase 13 — mesclado na `main`, merge commit `0f2cb6d`)
 
 Repositório: https://github.com/electrocaiorv-boop/ravz-product-hunter
 Pasta local: `C:\Users\caios\ravz-product-hunter`
@@ -58,8 +58,8 @@ Fontes (Mercado Livre, Google Trends via Apify, dados de fornecedor) → sete mo
 | 11 — Opportunity Integration | Composição dos sete motores | Concluída |
 | 12A — Orchestration | Busca evidências e integra | Concluída |
 | 12B — AI Research Agent | Agente com LLM, limites e verificações | Na `main` (a1abd82); **sem chamada real de LLM ainda** |
-| OAuth Mercado Livre | PKCE + relay no Cloudflare Worker + refresh | Branch `feat/mercadolivre-oauth`; **implantado e autorizado em 17/11/2026**; aguardando merge |
-| **13 — Fonte de concorrência por catálogo** | Concorrência via categoria → mais vendidos → vendedores por produto | **Concluída em 18/11/2026** |
+| OAuth Mercado Livre | PKCE + relay no Cloudflare Worker + refresh | **Na `main`** (PR #5, merge `0f2cb6d`, 18/11/2026); implantado e autorizado em 17/11/2026 |
+| **13 — Fonte de concorrência por catálogo** | Concorrência via categoria → mais vendidos → vendedores por produto | **Na `main`** (PR #5, merge `0f2cb6d`, 18/11/2026) |
 
 ## 4. Fase 13 — Fonte de concorrência por catálogo
 
@@ -94,7 +94,7 @@ Fontes (Mercado Livre, Google Trends via Apify, dados de fornecedor) → sete mo
 - Execução real com "fone bluetooth": Concorrência **disponível** — categoria `MLB196208` (Fones de Ouvido), 5 produtos amostrados (Soundcore P20i/P30i, "Pro 4" genérico, Xiaomi Redmi Buds 6 Play, Samsung Galaxy Buds Core), `competition_score=31.54` (antes da correção: 14.47), `confidence_score=55.0` (teto da fonte única). `seller_concentration_index=0.413` — mistura de produtos de marca com 1 vendedor e produtos genéricos com 70-100 vendedores. Ver tabela por produto na seção 5.
 - Nenhuma regressão detectada nas Fases 1–12B; `invariant-check` → PASS, 0 FAIL, 0 WARN.
 - `.gitattributes` adicionado (`* text=auto eol=lf`) depois de detectar que vários arquivos alterados nesta sessão foram salvos em CRLF; todos convertidos de volta para LF antes da aprovação.
-- **Aprovada por Caio em 18/11/2026.** Commitada em 3 commits (correções do Passo 0, `.gitattributes`, Fase 13) e enviada em PR para `main` — merge pendente de revisão.
+- **Aprovada por Caio em 18/11/2026.** Commitada em 3 commits (correções do Passo 0, `.gitattributes`, Fase 13), enviada no PR #5 e revisada. CI verde, sem conflito com a `main`. **Mesclada na `main`** com merge commit (sem squash, mesmo padrão dos merges da Fase 12A/12B) em `0f2cb6d`; branch `feat/mercadolivre-oauth` mantida no remoto.
 
 ## 5. Estado real — 17/11/2026
 
@@ -142,7 +142,7 @@ A faixa de preço do "Pro 4" (R$ 10 a R$ 3.382 dentro do mesmo `product_id`) é 
 
 ## 6. Próximos passos (em ordem)
 
-1. **Merge do PR da branch `feat/mercadolivre-oauth`** (OAuth + Fase 13) — aberto, aguardando revisão de Caio.
+1. **PR #4** (README curto + `docs/PHASES.md` + Fases 12A-12B no LEARNING) — próximo passo. Conflita com o que a Fase 13 mesclou em `docs/LEARNING.md` (ambos só adicionam conteúdo, mas no mesmo ponto do fim do arquivo); confirmado por simulação local de merge em 18/11/2026. Vai precisar de rebase/resolução do conflito antes de mesclar.
 2. **Melhoria futura na tabela por produto (Fase 13):** hoje "loja oficial" é sim/não **por produto** (sim se QUALQUER oferta daquele produto tiver `official_store_id`) — com isso, "sim" aparece quase sempre, mesmo quando a maioria das ofertas é de revendedor comum. Falta: (a) quantas das N ofertas daquele produto são de loja oficial (ex.: "2 de 72"), e (b) se a oferta de **menor preço** é de loja oficial ou não — essa é a pergunta que decide se vale tentar competir por preço ou se o concorrente mais barato já é a marca. Nenhuma das duas precisa de requisição nova; é reprocessar `product_table`/`ProductObservation` com os dados já coletados.
 3. **Fase 14 (proposta)** — Fornecedores nacionais de dropshipping: pesquisar quem tem catálogo/API no Brasil e ligar à Fase 8, cruzando produto ↔ fornecedor ↔ custo ↔ prazo, com margem automática.
 4. Permissões só de leitura no app do Mercado Livre (o token atual veio com escopo de escrita — ver §5).
@@ -155,6 +155,7 @@ A faixa de preço do "Pro 4" (R$ 10 a R$ 3.382 dentro do mesmo `product_id`) é 
 Cada fase tem início e escopo definidos, implementação, testes, critério objetivo de aprovação, documentação e encerramento formal. Nada de commit ou push sem aprovação. Este documento é atualizado ao abrir e ao encerrar cada fase.
 
 ## Histórico deste documento
+- 18/11/2026 (merge) — PR #5 revisado por Caio: CI verde, sem conflito com a `main`. Mesclado com merge commit (sem squash) em `0f2cb6d`, branch remota mantida. OAuth do Mercado Livre e Fase 13 agora na `main`. Checado por simulação local: PR #4 vai conflitar com a Fase 13 em `docs/LEARNING.md` (ambos só adicionam, no mesmo ponto do fim do arquivo) — registrado em §6 como próximo passo, PR #4 não foi tocado.
 - 18/11/2026 (aprovação) — Caio aprovou a Fase 13. Commitada em 3 partes (correções do Passo 0, `.gitattributes`, Fase 13) e enviada em PR para `main` (merge pendente de revisão). Registrada em §6 a melhoria futura: % de ofertas de loja oficial por produto e se a oferta mais barata é de loja oficial.
 - 18/11/2026 — Correção de lógica revisada pelo usuário antes da aprovação: `seller_concentration` por produto estava invertida para produtos de 1 vendedor (lia como "zero concentração"). Corrigida para `1/nº_vendedores` (HHI de participação igual), mapeado `official_store_id`, adicionada tabela observada por produto. Suíte 1310 passed + 1 skipped. `.gitattributes` adicionado (LF) depois de arquivos terem sido salvos em CRLF nesta sessão; todos convertidos de volta. Nova execução real: `competition_score=31.54` (antes: 14.47). Ainda aguardando aprovação para commit/push.
 - 17/11/2026 23h — Fase 13 implementada pelo Claude Code: novo provider de concorrência por catálogo, orchestrator parou de chamar a busca bloqueada, suíte 1301 passed + 1 skipped, `invariant-check` PASS. Execução real com "fone bluetooth" confirmou Concorrência disponível com nomes de produto. Aguardando aprovação para commit/push.
