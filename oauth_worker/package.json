@@ -1,0 +1,10 @@
+{
+  "name": "ravz-ml-oauth",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Stateless Mercado Livre OAuth callback relay (Cloudflare Worker)",
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

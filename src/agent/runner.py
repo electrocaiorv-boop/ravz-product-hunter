@@ -94,6 +94,7 @@ def run_agent(
     llm_client=None,
     trend_fetcher=None,
     marketplace_searcher=None,
+    catalog_sampler=None,
     time_source=None,
 ) -> AgentResult:
     """Run one bounded agent research task.
@@ -133,6 +134,7 @@ def run_agent(
         cache=EvidenceCache(),
         trend_fetcher=trend_fetcher,
         marketplace_searcher=marketplace_searcher,
+        catalog_sampler=catalog_sampler,
     )
 
     messages = [{

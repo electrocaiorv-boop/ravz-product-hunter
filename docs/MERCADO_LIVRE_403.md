@@ -1,15 +1,28 @@
 # Mercado Livre HTTP 403 — Diagnostic and Remediation Plan
 
-**Status: `BLOCKED_BY_CONFIGURATION`**
+**Status: `RESOLVED — Obstacle A cleared, Obstacle B confirmed`**
 
-No Mercado Livre credentials are configured in this environment, so the
-integration has never made an authenticated request. That must be fixed
-before any further conclusion is possible. A second, independent
-obstacle is likely but **unproven from here** — see "Two obstacles"
-below.
+Both obstacles named in this document have been resolved as far as this
+project can resolve them:
 
-This document is a plan. **No OAuth subsystem is implemented in Phase
-12B**, by instruction and by scope.
+- **Obstacle A (ours) — cleared.** OAuth is implemented, deployed and
+  authorized (`docs/MERCADO_LIVRE_OAUTH.md`). `GET /sites/MLB` returns
+  200 with a real token, live-validated 2026-11-17.
+- **Obstacle B (theirs) — confirmed, not fixable from here.**
+  `GET /sites/MLB/search` still returns 403 with a valid, authenticated
+  token, live-validated the same day. This is the decisive experiment
+  from section 5 below, and its outcome is the second row: a policy
+  refusal, not a credential problem.
+
+**Resolution:** Fase 13 (`docs/VISAO_GERAL.md` §4) replaces this
+specific endpoint, for Competition evidence, with a different chain
+built from endpoints that do work with the same token
+(`domain_discovery` → `highlights` → `/products/{id}/items`). This
+document's forensic record below is kept as-is — it is still an
+accurate account of what was observed and why `/sites/MLB/search`
+itself was never fixed, only routed around. `search_products()` stays
+in the code as a disabled source (see `src/integrations/mercadolivre.py`),
+per that decision.
 
 ---
 
@@ -173,36 +186,42 @@ prevent. Competition stays `None` rather than accept a substitute.
 
 ---
 
-## 7. Impact while blocked
+## 7. Impact while `/sites/MLB/search` itself stays blocked
 
-- Competition is a **commercial requirement**, so a missing Competition
-  score forces `INCOMPLETE_EVIDENCE` and withholds the final
-  classification.
-- No live run can reach `READY` while this is unresolved, even with all
-  four manual domains supplied.
-- The false-safety ceiling fires, capping the aggregate so that the
+This section described the state **before** Fase 13. It remains
+accurate for `/sites/MLB/search` specifically, which is still refused
+and is not expected to change:
+
+- That endpoint alone cannot supply Competition evidence; a provider
+  limited to it would force `INCOMPLETE_EVIDENCE` every time.
+- The false-safety ceiling would fire, capping the aggregate so a
   missing negative dimension cannot inflate the score.
 
-This is correct behaviour under the current contracts, not a
-workaround.
+**This is no longer the live outcome**, because Competition no longer
+depends on this endpoint. `src/orchestrator.py` sources Competition
+from the Fase 13 category-catalog chain instead (see
+`docs/VISAO_GERAL.md` §4), which does reach `READY`'s commercial
+requirement when evidence is found. The analysis above stays correct
+as a description of this ONE endpoint, not of Competition's current
+availability.
 
 ---
 
-## 8. Next steps, in order
+## 8. Next steps — completed
 
-1. Register the application; populate `CLIENT_ID` / `CLIENT_SECRET`.
-2. Complete the authorization-code flow once, manually, to obtain a
-   token. Do not build an OAuth subsystem to do it.
-3. Run the single connectivity test in section 5.
-4. Record the outcome here, with the `x-request-id`, and update this
-   document's status line.
-5. **If 200:** re-test `/sites/MLB/search`, then decide whether the
-   undocumented free-text `q` usage should be replaced by a documented
-   access pattern.
-6. **If still 403:** mark Obstacle B confirmed, open a support case, and
-   treat marketplace evidence as structurally unavailable. That becomes
-   a roadmap decision about finding a different provider for listing
-   evidence — not a bug to fix in code.
+1. ✅ Application registered; `CLIENT_ID`/`CLIENT_SECRET` populated.
+2. ✅ Authorization-code flow completed; token obtained and stored
+   (`docs/MERCADO_LIVRE_OAUTH.md`).
+3. ✅ Connectivity test from section 5 run live, 2026-11-17.
+4. ✅ Outcome recorded (see the status block at the top of this
+   document): `GET /sites/MLB` → 200, `GET /sites/MLB/search` → 403.
+5. **Obstacle B confirmed.** No code change fixes a policy refusal. No
+   support case has been opened (not pursued — the roadmap decision
+   below superseded it).
+6. **Roadmap decision taken:** Fase 13 found a different, working
+   provider for listing evidence (`docs/VISAO_GERAL.md` §4) rather than
+   pursuing `/sites/MLB/search` further. `search_products()` stays in
+   the code as a disabled source, per that decision.
 
 Do not attempt to bypass, scrape, or evade the refusal under any
 outcome.

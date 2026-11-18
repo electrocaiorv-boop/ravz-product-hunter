@@ -1,0 +1,16 @@
+[
+  {
+    "domain_id": "MLB-HEADPHONES",
+    "domain_name": "Fones de ouvido",
+    "category_id": "MLB196208",
+    "category_name": "Fones de Ouvido",
+    "attributes": []
+  },
+  {
+    "domain_id": "MLB-SPEAKERS",
+    "domain_name": "Caixas de som",
+    "category_id": "MLB3843",
+    "category_name": "Caixas Bluetooth",
+    "attributes": []
+  }
+]

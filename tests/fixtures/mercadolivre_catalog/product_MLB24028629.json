@@ -1,0 +1,1208 @@
+{
+  "id": "MLB24028629",
+  "catalog_product_id": "MLB24028629",
+  "status": "active",
+  "pdp_types": [
+    "traditional"
+  ],
+  "domain_id": "MLB-HEADPHONES",
+  "permalink": "",
+  "name": "Fone De Ouvido Soundcore by Anker P20i Graves Poderosos e Impactantes Bluetooth 5.3 30H de Reprodução Resistência à Água 2 Mics IA para Chamadas Claras Personalização de Som via App Cor Preto",
+  "family_name": "Fone de ouvido in-ear sem fio Anker TWS P20i com luz LED",
+  "type": "catalog_product",
+  "buy_box_winner": null,
+  "pickers": [
+    {
+      "picker_id": "COLOR",
+      "picker_name": "Cor",
+      "products": [
+        {
+          "product_id": "MLB38302175",
+          "picker_label": "Azul",
+          "picture_id": "709113-MLA99494499900_112025",
+          "thumbnail": "https://http2.mlstatic.com/D_NQ_NP_709113-MLA99494499900_112025-I.jpg",
+          "tags": [],
+          "changes": [
+            [
+              "COLOR",
+              "Azul"
+            ]
+          ],
+          "permalink": "",
+          "product_name": "Anker TWS P20i - Azul - 1",
+          "auto_completed": true,
+          "rgb_meta": "1717FF"
+        },
+        {
+          "product_id": "MLB41678099",
+          "picker_label": "Azul-claro",
+          "picture_id": "795169-MLA82142862890_022025",
+          "thumbnail": "https://http2.mlstatic.com/D_NQ_NP_795169-MLA82142862890_022025-I.jpg",
+          "tags": [],
+          "changes": [
+            [
+              "COLOR",
+              "Azul-claro"
+            ]
+          ],
+          "permalink": "",
+          "product_name": "Anker TWS P20i - Azul-claro - 1",
+          "auto_completed": true,
+          "rgb_meta": "83DDFF"
+        },
+        {
+          "product_id": "MLB41991979",
+          "picker_label": "Azul-petróleo",
+          "picture_id": "760779-MLA82159559386_022025",
+          "thumbnail": "https://http2.mlstatic.com/D_NQ_NP_760779-MLA82159559386_022025-I.jpg",
+          "tags": [
+            "no-winner",
+            "no-bids"
+          ],
+          "changes": [
+            [
+              "COLOR",
+              "Azul-petróleo"
+            ]
+          ],
+          "permalink": "",
+          "product_name": "Anker TWS P20i - Azul-petróleo - 1",
+          "auto_completed": true,
+          "rgb_meta": "1717FF"
+        },
+        {
+          "product_id": "MLB28705945",
+          "picker_label": "Blue",
+          "picture_id": "999932-MLA99980453119_112025",
+          "thumbnail": "https://http2.mlstatic.com/D_NQ_NP_999932-MLA99980453119_112025-I.jpg",
+          "tags": [
+            "no-winner",
+            "no-bids"
+          ],
+          "changes": [
+            [
+              "COLOR",
+              "Blue"
+            ]
+          ],
+          "permalink": "",
+          "product_name": "Anker TWS P20i - Blue - 1",
+          "auto_completed": true,
+          "rgb_meta": "1717FF"
+        },
+        {
+          "product_id": "MLB43397587",
+          "picker_label": "Branco",
+          "picture_id": "788794-MLA95696847458_102025",
+          "thumbnail": "https://http2.mlstatic.com/D_NQ_NP_788794-MLA95696847458_102025-I.jpg",
+          "tags": [],
+          "changes": [
+            [
+              "COLOR",
+              "Branco"
+            ]
+          ],
+          "permalink": "",
+          "product_name": "Anker TWS P20i - Branco - 1",
+          "auto_completed": true,
+          "rgb_meta": "FFFFFF"
+        },
+        {
+          "product_id": "MLB24028629",
+          "picker_label": "Preto",
+          "picture_id": "730568-MLA99983575997_112025",
+          "thumbnail": "https://http2.mlstatic.com/D_NQ_NP_730568-MLA99983575997_112025-I.jpg",
+          "tags": [
+            "selected"
+          ],
+          "changes": [],
+          "permalink": "",
+          "product_name": "Anker TWS P20i - Preto - 1",
+          "auto_completed": true,
+          "rgb_meta": "000000"
+        },
+        {
+          "product_id": "MLB50981260",
+          "picker_label": "Rosa",
+          "picture_id": "931124-MLA96133477503_102025",
+          "thumbnail": "https://http2.mlstatic.com/D_NQ_NP_931124-MLA96133477503_102025-I.jpg",
+          "tags": [],
+          "changes": [
+            [
+              "COLOR",
+              "Rosa"
+            ]
+          ],
+          "permalink": "",
+          "product_name": "Anker TWS P20i - Rosa - 1",
+          "auto_completed": true,
+          "rgb_meta": "FCB1BE"
+        },
+        {
+          "product_id": "MLB40909643",
+          "picker_label": "White",
+          "picture_id": "618782-MLA82191714610_022025",
+          "thumbnail": "https://http2.mlstatic.com/D_NQ_NP_618782-MLA82191714610_022025-I.jpg",
+          "tags": [
+            "no-winner",
+            "no-bids"
+          ],
+          "changes": [
+            [
+              "COLOR",
+              "White"
+            ]
+          ],
+          "permalink": "",
+          "product_name": "Anker TWS P20i - White - 1",
+          "auto_completed": true,
+          "rgb_meta": "FFFFFF"
+        }
+      ],
+      "tags": [],
+      "attributes": [
+        {
+          "attribute_id": "COLOR",
+          "template": "",
+          "position": 1
+        },
+        {
+          "attribute_id": "LIGHT_COLOR",
+          "template": "",
+          "position": 2
+        }
+      ],
+      "value_name_delimiter": " | ",
+      "hide_extra_decoration": false,
+      "secondary_picker_name": ""
+    },
+    {
+      "picker_id": "PAIRS_NUMBER",
+      "picker_name": "Quantidade de pares",
+      "products": [
+        {
+          "product_id": "MLB24028629",
+          "picker_label": "1",
+          "picture_id": "",
+          "thumbnail": "",
+          "tags": [
+            "selected"
+          ],
+          "changes": [],
+          "permalink": "",
+          "product_name": "Anker TWS P20i - Preto - 1",
+          "auto_completed": false,
+          "rgb_meta": "000000"
+        }
+      ],
+      "tags": [],
+      "attributes": [
+        {
+          "attribute_id": "PAIRS_NUMBER",
+          "template": "",
+          "position": 1
+        }
+      ],
+      "value_name_delimiter": "",
+      "hide_extra_decoration": true,
+      "secondary_picker_name": ""
+    }
+  ],
+  "pictures": [
+    {
+      "id": "730568-MLA99983575997_112025",
+      "url": "https://http2.mlstatic.com/D_NQ_NP_730568-MLA99983575997_112025-F.jpg",
+      "suggested_for_picker": null,
+      "max_width": 962,
+      "max_height": 1200,
+      "source_metadata": null,
+      "tags": [
+        "CAROUSEL"
+      ]
+    },
+    {
+      "id": "827409-MLA87504171971_072025",
+      "url": "https://http2.mlstatic.com/D_NQ_NP_827409-MLA87504171971_072025-F.jpg",
+      "suggested_for_picker": null,
+      "max_width": 1200,
+      "max_height": 1200,
+      "source_metadata": null,
+      "tags": [
+        "CAROUSEL"
+      ]
+    },
+    {
+      "id": "876547-MLA87177560354_072025",
+      "url": "https://http2.mlstatic.com/D_NQ_NP_876547-MLA87177560354_072025-F.jpg",
+      "suggested_for_picker": null,
+      "max_width": 1200,
+      "max_height": 1086,
+      "source_metadata": null,
+      "tags": [
+        "CAROUSEL"
+      ]
+    },
+    {
+      "id": "846372-MLA87504162329_072025",
+      "url": "https://http2.mlstatic.com/D_NQ_NP_846372-MLA87504162329_072025-F.jpg",
+      "suggested_for_picker": null,
+      "max_width": 1200,
+      "max_height": 1200,
+      "source_metadata": null,
+      "tags": [
+        "CAROUSEL"
+      ]
+    },
+    {
+      "id": "695382-MLA90585321219_082025",
+      "url": "https://http2.mlstatic.com/D_NQ_NP_695382-MLA90585321219_082025-F.jpg",
+      "suggested_for_picker": null,
+      "max_width": 1101,
+      "max_height": 1100,
+      "source_metadata": null,
+      "tags": [
+        "CAROUSEL"
+      ]
+    },
+    {
+      "id": "863329-MLA87504124663_072025",
+      "url": "https://http2.mlstatic.com/D_NQ_NP_863329-MLA87504124663_072025-F.jpg",
+      "suggested_for_picker": null,
+      "max_width": 1200,
+      "max_height": 1200,
+      "source_metadata": null,
+      "tags": [
+        "CAROUSEL"
+      ]
+    },
+    {
+      "id": "616916-MLA90585786199_082025",
+      "url": "https://http2.mlstatic.com/D_NQ_NP_616916-MLA90585786199_082025-F.jpg",
+      "suggested_for_picker": null,
+      "max_width": 1100,
+      "max_height": 1100,
+      "source_metadata": null,
+      "tags": [
+        "CAROUSEL"
+      ]
+    }
+  ],
+  "description_pictures": [],
+  "main_features": [
+    {
+      "text": "Seu alcance sem fio é de 15 m.",
+      "type": "key_value",
+      "metadata": {}
+    },
+    {
+      "text": "Com estojo de carregamento sem fio.",
+      "type": "key_value",
+      "metadata": {}
+    },
+    {
+      "text": "Inclui microfone.",
+      "type": "key_value",
+      "metadata": {}
+    },
+    {
+      "text": "Resistentes à água.",
+      "type": "key_value",
+      "metadata": {}
+    },
+    {
+      "text": "O comprimento do cabo é de 3.5mm.",
+      "type": "key_value",
+      "metadata": {}
+    },
+    {
+      "text": "Som superior e ilimitado.",
+      "type": "key_value",
+      "metadata": {}
+    },
+    {
+      "text": "Confortávels e práticos.",
+      "type": "key_value",
+      "metadata": {}
+    },
+    {
+      "text": "Tamanho do alto-falante: 4 cm.",
+      "type": "key_value",
+      "metadata": {}
+    }
+  ],
+  "disclaimers": [],
+  "attributes": [
+    {
+      "id": "BRAND",
+      "name": "Marca",
+      "value_id": "98385",
+      "value_name": "Anker",
+      "values": [
+        {
+          "id": "98385",
+          "name": "Anker"
+        }
+      ]
+    },
+    {
+      "id": "LINE",
+      "name": "Linha",
+      "value_id": "8736865",
+      "value_name": "TWS",
+      "values": [
+        {
+          "id": "8736865",
+          "name": "TWS"
+        }
+      ]
+    },
+    {
+      "id": "MODEL",
+      "name": "Modelo",
+      "value_id": "16998648",
+      "value_name": "P20i",
+      "values": [
+        {
+          "id": "16998648",
+          "name": "P20i"
+        }
+      ]
+    },
+    {
+      "id": "COLOR",
+      "name": "Cor",
+      "value_id": "52049",
+      "value_name": "Preto",
+      "values": [
+        {
+          "id": "52049",
+          "name": "Preto"
+        }
+      ]
+    },
+    {
+      "id": "PAIRS_NUMBER",
+      "name": "Quantidade de pares",
+      "value_id": "7386989",
+      "value_name": "1",
+      "values": [
+        {
+          "id": "7386989",
+          "name": "1"
+        }
+      ]
+    },
+    {
+      "id": "MAIN_COLOR",
+      "name": "Cor principal",
+      "value_id": "2450295",
+      "value_name": "Preto",
+      "values": [
+        {
+          "id": "2450295",
+          "name": "Preto",
+          "meta": {
+            "rgb": "000000"
+          }
+        }
+      ],
+      "meta": {
+        "rgb": "000000"
+      }
+    },
+    {
+      "id": "HEADPHONE_FORMAT",
+      "name": "Formato do fone de ouvido",
+      "value_id": "182351",
+      "value_name": "In-ear",
+      "values": [
+        {
+          "id": "182351",
+          "name": "In-ear"
+        }
+      ]
+    },
+    {
+      "id": "IS_WIRELESS",
+      "name": "É sem fio",
+      "value_id": "242085",
+      "value_name": "Sim",
+      "values": [
+        {
+          "id": "242085",
+          "name": "Sim",
+          "meta": {
+            "value": true
+          }
+        }
+      ],
+      "meta": {
+        "value": true
+      }
+    },
+    {
+      "id": "WITH_BLUETOOTH",
+      "name": "Com Bluetooth",
+      "value_id": "242085",
+      "value_name": "Sim",
+      "values": [
+        {
+          "id": "242085",
+          "name": "Sim",
+          "meta": {
+            "value": true
+          }
+        }
+      ],
+      "meta": {
+        "value": true
+      }
+    },
+    {
+      "id": "WITH_MICROPHONE",
+      "name": "Com microfone",
+      "value_id": "242085",
+      "value_name": "Sim",
+      "values": [
+        {
+          "id": "242085",
+          "name": "Sim",
+          "meta": {
+            "value": true
+          }
+        }
+      ],
+      "meta": {
+        "value": true
+      }
+    },
+    {
+      "id": "IS_MONAURAL",
+      "name": "É monaural",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "meta": {
+            "value": false
+          }
+        }
+      ],
+      "meta": {
+        "value": false
+      }
+    },
+    {
+      "id": "IS_GAMER",
+      "name": "É gamer",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "meta": {
+            "value": false
+          }
+        }
+      ],
+      "meta": {
+        "value": false
+      }
+    },
+    {
+      "id": "IS_INFANT",
+      "name": "É infantil",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "meta": {
+            "value": false
+          }
+        }
+      ],
+      "meta": {
+        "value": false
+      }
+    },
+    {
+      "id": "WITH_LED_LIGHT",
+      "name": "Com luz LED",
+      "value_id": "242085",
+      "value_name": "Sim",
+      "values": [
+        {
+          "id": "242085",
+          "name": "Sim",
+          "meta": {
+            "value": true
+          }
+        }
+      ],
+      "meta": {
+        "value": true
+      }
+    },
+    {
+      "id": "ANATEL_HOMOLOGATION_NUMBER",
+      "name": "Homologação Anatel Nº",
+      "value_id": "58456918",
+      "value_name": "83442416934",
+      "values": [
+        {
+          "id": "58456918",
+          "name": "83442416934"
+        }
+      ]
+    },
+    {
+      "id": "DETAILED_MODEL",
+      "name": "Modelo detalhado",
+      "value_id": "58456919",
+      "value_name": "A39490F2",
+      "values": [
+        {
+          "id": "58456919",
+          "name": "A39490F2"
+        }
+      ]
+    },
+    {
+      "id": "WIRELESS_RANGE",
+      "name": "Alcance sem fio",
+      "value_id": "2120609",
+      "value_name": "10 m",
+      "values": [
+        {
+          "id": "2120609",
+          "name": "10 m"
+        }
+      ]
+    },
+    {
+      "id": "DIAPHRAGM_UNIT",
+      "name": "Unidade de diafragma",
+      "value_id": "15125622",
+      "value_name": "1 cm",
+      "values": [
+        {
+          "id": "15125622",
+          "name": "1 cm"
+        }
+      ]
+    },
+    {
+      "id": "FREQUENCY_RESPONSE",
+      "name": "Resposta em frequência",
+      "value_id": "925820",
+      "value_name": "20 Hz - 20 kHz",
+      "values": [
+        {
+          "id": "925820",
+          "name": "20 Hz - 20 kHz"
+        }
+      ]
+    },
+    {
+      "id": "SENSITIVITY",
+      "name": "Sensibilidade",
+      "value_id": "8260710",
+      "value_name": "95.6 dB",
+      "values": [
+        {
+          "id": "8260710",
+          "name": "95.6 dB"
+        }
+      ]
+    },
+    {
+      "id": "CABLE_LENGTH",
+      "name": "Comprimento do cabo",
+      "value_id": "7365134",
+      "value_name": "0.35 cm",
+      "values": [
+        {
+          "id": "7365134",
+          "name": "0.35 cm"
+        }
+      ]
+    },
+    {
+      "id": "HEADPHONE_MAX_BATTERY_LIFE",
+      "name": "Duração máxima da bateria",
+      "value_id": "9850506",
+      "value_name": "30 h",
+      "values": [
+        {
+          "id": "9850506",
+          "name": "30 h"
+        }
+      ]
+    },
+    {
+      "id": "HEADPHONE_CHARGING_TIME",
+      "name": "Tempo de carregamento do fone de ouvido",
+      "value_id": "21174798",
+      "value_name": "1.5 h",
+      "values": [
+        {
+          "id": "21174798",
+          "name": "1.5 h"
+        }
+      ]
+    },
+    {
+      "id": "CASE_CHARGING_TIME",
+      "name": "Tempo de carregamento do estojo",
+      "value_id": "21449825",
+      "value_name": "2 h",
+      "values": [
+        {
+          "id": "21449825",
+          "name": "2 h"
+        }
+      ]
+    },
+    {
+      "id": "INCLUDES_CHARGING_CASE",
+      "name": "Inclui estojo de carregamento",
+      "value_id": "242085",
+      "value_name": "Sim",
+      "values": [
+        {
+          "id": "242085",
+          "name": "Sim",
+          "meta": {
+            "value": true
+          }
+        }
+      ],
+      "meta": {
+        "value": true
+      }
+    },
+    {
+      "id": "WITH_WIRELESS_CHARGING",
+      "name": "Com carregamento sem fio",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "meta": {
+            "value": false
+          }
+        }
+      ],
+      "meta": {
+        "value": false
+      }
+    },
+    {
+      "id": "WITH_TWS_TECHNOLOGY",
+      "name": "Com tecnologia TWS",
+      "value_id": "242085",
+      "value_name": "Sim",
+      "values": [
+        {
+          "id": "242085",
+          "name": "Sim",
+          "meta": {
+            "value": true
+          }
+        }
+      ],
+      "meta": {
+        "value": true
+      }
+    },
+    {
+      "id": "WITH_PROXIMITY_SENSOR",
+      "name": "Com sensor de proximidade",
+      "value_id": "242085",
+      "value_name": "Sim",
+      "values": [
+        {
+          "id": "242085",
+          "name": "Sim",
+          "meta": {
+            "value": true
+          }
+        }
+      ],
+      "meta": {
+        "value": true
+      }
+    },
+    {
+      "id": "WITH_HANDS_FREE_MODE",
+      "name": "Com modo mãos livres",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "meta": {
+            "value": false
+          }
+        }
+      ],
+      "meta": {
+        "value": false
+      }
+    },
+    {
+      "id": "WITH_MP3_PLAYER",
+      "name": "Com leitor de MP3",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "meta": {
+            "value": false
+          }
+        }
+      ],
+      "meta": {
+        "value": false
+      }
+    },
+    {
+      "id": "WITH_FM_RADIO",
+      "name": "Com rádio FM",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "meta": {
+            "value": false
+          }
+        }
+      ],
+      "meta": {
+        "value": false
+      }
+    },
+    {
+      "id": "WITH_NOISE_CANCELLING",
+      "name": "Com cancelamento de ruído",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "meta": {
+            "value": false
+          }
+        }
+      ],
+      "meta": {
+        "value": false
+      }
+    },
+    {
+      "id": "IS_WATER_RESISTANT",
+      "name": "É resistente à água",
+      "value_id": "242085",
+      "value_name": "Sim",
+      "values": [
+        {
+          "id": "242085",
+          "name": "Sim",
+          "meta": {
+            "value": true
+          }
+        }
+      ],
+      "meta": {
+        "value": true
+      }
+    },
+    {
+      "id": "IS_WATERPROOF",
+      "name": "É à prova d'água",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "meta": {
+            "value": false
+          }
+        }
+      ],
+      "meta": {
+        "value": false
+      }
+    },
+    {
+      "id": "IS_DUST_RESISTANT",
+      "name": "É resistente ao pó",
+      "value_id": "242085",
+      "value_name": "Sim",
+      "values": [
+        {
+          "id": "242085",
+          "name": "Sim",
+          "meta": {
+            "value": true
+          }
+        }
+      ],
+      "meta": {
+        "value": true
+      }
+    },
+    {
+      "id": "WITH_DETACHABLE_CABLE",
+      "name": "Com cabo desmontável",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "meta": {
+            "value": false
+          }
+        }
+      ],
+      "meta": {
+        "value": false
+      }
+    },
+    {
+      "id": "WITH_DETACHABLE_MICROPHONE",
+      "name": "Com microfone desmontável",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "meta": {
+            "value": false
+          }
+        }
+      ],
+      "meta": {
+        "value": false
+      }
+    },
+    {
+      "id": "WITH_FLEXIBLE_MICROPHONE",
+      "name": "Com microfone flexível",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "meta": {
+            "value": false
+          }
+        }
+      ],
+      "meta": {
+        "value": false
+      }
+    },
+    {
+      "id": "WITH_INTEGRATED_VOICE_ASSISTANTS",
+      "name": "Com assistentes de voz integrados",
+      "value_id": "242085",
+      "value_name": "Sim",
+      "values": [
+        {
+          "id": "242085",
+          "name": "Sim",
+          "meta": {
+            "value": true
+          }
+        }
+      ],
+      "meta": {
+        "value": true
+      }
+    },
+    {
+      "id": "MICROPHONES_NUMBER",
+      "name": "Quantidade de microfones",
+      "value_id": "288917",
+      "value_name": "2",
+      "values": [
+        {
+          "id": "288917",
+          "name": "2"
+        }
+      ]
+    },
+    {
+      "id": "IP_RATING",
+      "name": "Classificação IP",
+      "value_id": "9824297",
+      "value_name": "IPX5",
+      "values": [
+        {
+          "id": "9824297",
+          "name": "IPX5"
+        }
+      ]
+    },
+    {
+      "id": "INTEGRATED_VOICE_ASSISTANTS",
+      "name": "Assistentes de voz integrados",
+      "value_id": "9809928",
+      "value_name": "Siri",
+      "values": [
+        {
+          "id": "9809928",
+          "name": "Siri"
+        }
+      ]
+    },
+    {
+      "id": "CONNECTOR_TYPES",
+      "name": "Tipos de conectores",
+      "value_id": "13356818",
+      "value_name": "USB Type-C",
+      "values": [
+        {
+          "id": "13356818",
+          "name": "USB Type-C"
+        }
+      ]
+    },
+    {
+      "id": "BLUETOOTH_VERSION",
+      "name": "Versão de Bluetooth",
+      "value_id": "13172815",
+      "value_name": "5.3",
+      "values": [
+        {
+          "id": "13172815",
+          "name": "5.3"
+        }
+      ]
+    },
+    {
+      "id": "MICROPHONE_ORIENTATIONS",
+      "name": "Orientações do microfone",
+      "value_id": null,
+      "value_name": "Direita, Esquerda",
+      "values": [
+        {
+          "id": "8847354",
+          "name": "Direita"
+        },
+        {
+          "id": "8847355",
+          "name": "Esquerda"
+        }
+      ]
+    },
+    {
+      "id": "SUITABLE_USES",
+      "name": "Usos adequados",
+      "value_id": "19992751",
+      "value_name": "Entretenimento",
+      "values": [
+        {
+          "id": "19992751",
+          "name": "Entretenimento"
+        }
+      ]
+    },
+    {
+      "id": "CONTROL_FUNCTIONS",
+      "name": "Funções do controle ",
+      "value_id": "58404798",
+      "value_name": "Funções do controle",
+      "values": [
+        {
+          "id": "58404798",
+          "name": "Funções do controle"
+        }
+      ]
+    },
+    {
+      "id": "COMPATIBLE_GAME_CONSOLES",
+      "name": "Consoles de videogames compatíveis",
+      "value_id": "20171202",
+      "value_name": "Sim",
+      "values": [
+        {
+          "id": "20171202",
+          "name": "Sim"
+        }
+      ]
+    },
+    {
+      "id": "ACCESSORIES_INCLUDED",
+      "name": "Acessórios incluídos",
+      "value_id": null,
+      "value_name": "1 par de fones Soundcore P20i, 1 estojo de carregamento, 3 pares de pontas de silicone P M G, 1 cabo de carregamento usb tipo c, 1 cartão de segurança",
+      "values": [
+        {
+          "id": "58428698",
+          "name": "1 par de fones Soundcore P20i"
+        },
+        {
+          "id": "26185859",
+          "name": "1 estojo de carregamento"
+        },
+        {
+          "id": "58428699",
+          "name": "3 pares de pontas de silicone P M G"
+        },
+        {
+          "id": "20879855",
+          "name": "1 cabo de carregamento usb tipo c"
+        },
+        {
+          "id": "58428700",
+          "name": "1 cartão de segurança"
+        }
+      ]
+    }
+  ],
+  "short_description": {
+    "type": "plaintext",
+    "content": "Soundcore P20i intra-auricular – Graves potentes e personalização de som via aplicativo, para você aproveitar funk e samba. Com até 30 horas de duração da bateria, você fica tranquilo mesmo em caso de apagão. A tecnologia Bluetooth 5.3 garante uma conexão sempre estável. Mesmo em ambientes barulhentos, como ônibus lotado ou praias movimentadas, os dois microfones com IA mantêm suas chamadas sempre claras.\n\nO som começa, siga em frente!\nSoundcore by Anker é uma marca líder global em áudio, pertencente à Anker Innovations, reconhecida por 10 vencedores do Grammy e com mais de 52 milhões de usuários ao redor do mundo. Nossa missão é proporcionar uma experiência sonora extraordinária para todos os apaixonados por música e áudio no Brasil.\n\nQualidade de Som:\nSoundcore P20i traz drivers dinâmicos de 10mm para um grave potente e som imersivo, perfeito para gêneros brasileiros como funk, samba e forró. Com o aplicativo dedicado, personalize sua experiência com 22 modos de equalização para diferentes estilos de música ou crie seu perfil único.\n\nDuração da Bateria e Carregamento Rápido:\nDesfrute de até 10 horas contínuas nos fones e 30 horas totais com o estojo de carregamento compacto. Com a função de carregamento rápido, 10 minutos de recarga garantem 2 horas extras de música – ideal para quem tem rotina agitada.\n\nPersonalização Via App:\nControle total do som pelo aplicativo Soundcore, com 22 EQs pré-definidos e função de localizar os fones (“Find My Earbuds”).\n\nConectividade Moderna:\nBluetooth 5.3 garante conexão estável, rápida e compatibilidade com múltiplos dispositivos. O alcance wireless é de até 10 metros, oferecendo liberdade durante o uso.\n\nResistência e Conforto:\nCertificação IPX5, resistente à água, ideal para atividades esportivas e dias de chuva. Design ergonômico ultraleve (apenas 3,7g cada fone) para até 8 horas de conforto contínuo. O estojo conta com cordão para prender em mochilas ou chaveiros.\n\nChamadas Claras com IA:\nEquipado com 2 microfones e tecnologia de IA, o P20i reduz ruídos externos do transporte público, festas e ambientes abertos, trazendo clareza às suas chamadas em qualquer situação.\n\nConteúdo da Embalagem:\n1 par de fones Soundcore P20i\n1 estojo de carregamento\n3 pares de pontas de silicone (P/M/G)\n1 cabo de carregamento USB Tipo-C\n1 cartão de segurança\n\nPrincipais técnicas e diferenciais (base na ficha técnica):\n\nBluetooth 5.3, conexão estável até 10 metros\nDrivers de 10mm para graves reforçados\nDuração total da bateria: 30 horas (fones 10h + estojo 20h)\nCarregamento rápido: 10 minutos = 2h de uso\nIPX5 resistência à água\nSuporte a codecs AAC/SBC\nPeso leve, design ergonômico\nApp com 22 EQs\nFunção “Find My Earbuds”\nEstojo com cordão prático\"\n\nEspecificações de dimensão do estojo de carregamento do Soundcore P20i:\nDimensões: 1,1 pol (A) × 2,24 pol (C) × 2,05 pol (L)\nPeso: 1,6 oz"
+  },
+  "parent_id": "MLB24028590",
+  "children_ids": [],
+  "settings": {
+    "content": "fixed",
+    "listing_strategy": "catalog_required",
+    "exclusive": false,
+    "with_enhanced_pictures": false,
+    "base_site_product_id": null,
+    "ttr": "2026-11-18T15:30:23.790650918"
+  },
+  "quality_type": "COMPLETE",
+  "release_info": null,
+  "enhanced_content": {
+    "template_id": "052cf817-9bf6-4f9d-9273-15a24b39f9c1",
+    "version": "1.0",
+    "components": [
+      {
+        "type": "FLYER",
+        "ui_config": null,
+        "thumbnail": "",
+        "content": [
+          {
+            "id": "776825-MLA109490581083_032026",
+            "url": "https://http2.mlstatic.com/D_NQ_NP_776825-MLA109490581083_032026-F.jpg",
+            "max_width": 960,
+            "max_height": 720,
+            "source_metadata": null,
+            "status": "COMPLETED",
+            "tags": null
+          },
+          {
+            "id": "948428-MLA108679695006_032026",
+            "url": "https://http2.mlstatic.com/D_NQ_NP_948428-MLA108679695006_032026-F.jpg",
+            "max_width": 960,
+            "max_height": 720,
+            "source_metadata": null,
+            "status": "COMPLETED",
+            "tags": null
+          },
+          {
+            "id": "874196-MLA109488024345_032026",
+            "url": "https://http2.mlstatic.com/D_NQ_NP_874196-MLA109488024345_032026-F.jpg",
+            "max_width": 960,
+            "max_height": 720,
+            "source_metadata": null,
+            "status": "COMPLETED",
+            "tags": null
+          },
+          {
+            "id": "869381-MLA108676927914_032026",
+            "url": "https://http2.mlstatic.com/D_NQ_NP_869381-MLA108676927914_032026-F.jpg",
+            "max_width": 960,
+            "max_height": 720,
+            "source_metadata": null,
+            "status": "COMPLETED",
+            "tags": null
+          },
+          {
+            "id": "632890-MLA108678421208_032026",
+            "url": "https://http2.mlstatic.com/D_NQ_NP_632890-MLA108678421208_032026-F.jpg",
+            "max_width": 960,
+            "max_height": 720,
+            "source_metadata": null,
+            "status": "COMPLETED",
+            "tags": null
+          },
+          {
+            "id": "886935-MLA108681165350_032026",
+            "url": "https://http2.mlstatic.com/D_NQ_NP_886935-MLA108681165350_032026-F.jpg",
+            "max_width": 960,
+            "max_height": 720,
+            "source_metadata": null,
+            "status": "COMPLETED",
+            "tags": null
+          },
+          {
+            "id": "935624-MLA109490410655_032026",
+            "url": "https://http2.mlstatic.com/D_NQ_NP_935624-MLA109490410655_032026-F.jpg",
+            "max_width": 960,
+            "max_height": 720,
+            "source_metadata": null,
+            "status": "COMPLETED",
+            "tags": null
+          },
+          {
+            "id": "668107-MLA108679048490_032026",
+            "url": "https://http2.mlstatic.com/D_NQ_NP_668107-MLA108679048490_032026-F.jpg",
+            "max_width": 960,
+            "max_height": 720,
+            "source_metadata": null,
+            "status": "COMPLETED",
+            "tags": null
+          },
+          {
+            "id": "771717-MLA109490651127_032026",
+            "url": "https://http2.mlstatic.com/D_NQ_NP_771717-MLA109490651127_032026-F.jpg",
+            "max_width": 960,
+            "max_height": 720,
+            "source_metadata": null,
+            "status": "COMPLETED",
+            "tags": null
+          },
+          {
+            "id": "604687-MLA108676839734_032026",
+            "url": "https://http2.mlstatic.com/D_NQ_NP_604687-MLA108676839734_032026-F.jpg",
+            "max_width": 960,
+            "max_height": 720,
+            "source_metadata": null,
+            "status": "COMPLETED",
+            "tags": null
+          }
+        ]
+      }
+    ]
+  },
+  "tags": [],
+  "date_created": "2023-06-21T16:10:08Z",
+  "authorized_stores": null,
+  "last_updated": "2026-10-26T22:41:05Z",
+  "grouper_id": null,
+  "experiments": {},
+  "decoration_partial_content": false
+}

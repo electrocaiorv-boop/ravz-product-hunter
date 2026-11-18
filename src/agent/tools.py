@@ -33,12 +33,8 @@ from src.integrations.apify_trends import (
     DEFAULT_TIMEFRAME,
     ApifyTrendsError,
 )
-from src.integrations.mercadolivre import MercadoLivreError
-from src.orchestrator import (
-    DEFAULT_MARKETPLACE_LIMIT,
-    OrchestrationRequest,
-    run_opportunity_analysis,
-)
+from src.integrations.mercadolivre import DEFAULT_MARKETPLACE_LIMIT, MercadoLivreError
+from src.orchestrator import OrchestrationRequest, run_opportunity_analysis
 
 TOOL_RUN_FULL_ANALYSIS = "run_full_analysis"
 TOOL_FETCH_TREND = "fetch_trend_evidence"
@@ -143,8 +139,6 @@ TOOL_SCHEMAS = (
                 "geo": {"type": "string", "description": "Market, e.g. BR."},
                 "timeframe": {"type": "string",
                               "description": "Google Trends timeframe."},
-                "marketplace_limit": {"type": "integer", "minimum": 1,
-                                      "maximum": 50},
             },
             "required": ["query"],
         },
@@ -242,6 +236,15 @@ class ToolContext:
     # at all.
     trend_fetcher: object = None
     marketplace_searcher: object = None
+    # Fase 13: NOT memoized like the two above. Those are shared across
+    # multiple tool call sites (the orchestrator's own fetch inside
+    # `run_full_analysis`, AND a standalone tool -- `fetch_trend_evidence`
+    # / `search_marketplace`), which is why double-fetching across tools
+    # was ever possible. `catalog_sampler` has exactly one call site
+    # (`run_full_analysis`'s call into the orchestrator) -- there is
+    # nothing to deduplicate across tools, since no standalone
+    # "search_category_catalog" tool exists.
+    catalog_sampler: object = None
     declared: list = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -324,27 +327,30 @@ def _memoized_marketplace(searcher, cache: "EvidenceCache"):
 
 
 def _run_full_analysis(arguments: dict, context: ToolContext) -> tuple[dict, bool]:
-    _reject_unknown_keys(
-        arguments, ("query", "geo", "timeframe", "marketplace_limit"))
+    _reject_unknown_keys(arguments, ("query", "geo", "timeframe"))
     query = _require_str(arguments, "query")
     geo = _require_str(arguments, "geo", required=False, default=DEFAULT_GEO,
                        max_length=10)
     timeframe = _require_str(arguments, "timeframe", required=False,
                              default=DEFAULT_TIMEFRAME, max_length=40)
-    limit = _require_int(arguments, "marketplace_limit", lo=1, hi=50,
-                         default=DEFAULT_MARKETPLACE_LIMIT)
 
-    key = (query, geo, timeframe, limit)
+    key = (query, geo, timeframe)
 
     def run():
+        # No `marketplace_limit`/`marketplace_searcher` forwarded here
+        # (Fase 13): the orchestrator sources Competition from its own
+        # category-catalog chain now, not from `search_marketplace`'s
+        # provider. That tool/provider still exists for the agent's own
+        # research use -- see `_search_marketplace` below -- it is just
+        # no longer shared with this tool's call into the orchestrator.
         request = OrchestrationRequest(
             product_name=context.product_name, query=query, geo=geo,
-            timeframe=timeframe, marketplace_limit=limit,
+            timeframe=timeframe,
         )
         return run_opportunity_analysis(
             request,
             trend_fetcher=context.trend_fetcher,
-            marketplace_searcher=context.marketplace_searcher,
+            catalog_sampler=context.catalog_sampler,
         )
 
     result, reused = context.cache.remember(context.cache.analysis, key, run)
