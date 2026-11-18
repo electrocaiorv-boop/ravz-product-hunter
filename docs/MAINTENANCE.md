@@ -183,7 +183,7 @@ yields `None` (no defensible components), not a fabricated `0`.
 - [ ] `pytest` dependency checked
 - [ ] Other project dependencies checked
 - [ ] Full test suite executed (`python -m pytest -v` and `pytest -v`)
-- [ ] README updated if API behavior changed
+- [ ] `README.md` / `docs/PHASES.md` updated if API behavior changed
 - [ ] LEARNING.md updated if a new technical concept was learned
 - [ ] MAINTENANCE.md updated if the maintenance process itself changes
 
@@ -387,7 +387,7 @@ not source availability.
 - [ ] Score thresholds: `MIN_COST_COMPLETENESS_FOR_SCORE` (50%) and
       `MARGIN_SCORE_ANCHORS` are provisional, documented, and
       adjustable -- re-confirm they are still labeled as such
-      everywhere they're displayed (CLI, README)
+      everywhere they're displayed (CLI, `docs/PHASES.md`)
 - [ ] Break-even denominator: confirm `denominator <= 0` (not just
       `< 0`) is still handled safely (no crash, `break_even_price =
       None` with a note) -- exact-zero is a real, reachable case
@@ -736,7 +736,7 @@ raising any error. Check these deliberately.
       re-enabling ANY component, re-trace
       `raw provider evidence -> domain metric -> domain score ->
       integrated component` and check whether that evidence is already
-      consumed upstream. The map lives in `README.md` ("Phase 11 scope")
+      consumed upstream. The map lives in `docs/PHASES.md` ("Phase 11 scope")
       and `src/opportunity_models.py`'s docstring.
 - [ ] **Demand/Trend overlap**: still the project's one DUPLICATED
       pair. Re-confirm Demand and Trend share one family weight with one
@@ -917,8 +917,8 @@ raising any error. Check these deliberately.
 1. Check `pip list --outdated` for `requests`, `python-dotenv`, and
    `pytest`.
 2. Run `python -m pytest -v` and `pytest -v` — both must pass.
-3. Update `README.md`, `docs/LEARNING.md`, and this file if anything
-   changed.
+3. Update `README.md`, `docs/PHASES.md`, `docs/LEARNING.md`, and this
+   file if anything changed.
 
 ## Credential handling in integration exceptions (closed)
 

@@ -34,10 +34,10 @@ No function may produce a probability from these scores.
 
 ## Current State
 
-**Phase 12B is implemented and under review.** Phases 1–12A are merged
-into `main` (12A merge commit `f3fe04f`); the 12B agentic control layer
-(`src/agent/`, `src/llm_client.py`) is on a feature branch pending
-approval, per Git Discipline below. The full suite passes (1055 tests)
+**Phase 12B is implemented and merged.** Phases 1–12B are merged into
+`main` (12A merge commit `f3fe04f`, 12B merge commit `a1abd82`); the 12B
+agentic control layer lives in `src/agent/` and `src/llm_client.py`.
+The full suite passes (1055 tests)
 with **no `anthropic` package and no API key installed** — agent mode
 reports itself unavailable rather than degrading.
 
@@ -67,7 +67,7 @@ Remaining work, in order: database/history, n8n automation, notifications, conti
 Two numbering systems exist in this repo and must not be conflated:
 
 - **Phase numbers** (1–11, 12A and 12B done) — used by commit messages, doc section headers and module docstrings. This is the working numbering.
-- **Roadmap step numbers** (1–14 in `README.md`) — the original plan. Orchestration is step 10 there. Phases do not map 1:1 onto steps; several phases layer onto a single step.
+- **Roadmap step numbers** (1–14 in `docs/PHASES.md`) — the original plan. Orchestration is step 10 there. Phases do not map 1:1 onto steps; several phases layer onto a single step.
 
 When referring to work, use **phase numbers**.
 
@@ -487,4 +487,4 @@ This applies to the README, LEARNING.md, commit messages, and any summary writte
 
 Code and documentation must be understandable by another developer reviewing the repository during a hiring process.
 
-Reference docs: `README.md` (what each phase does) · `docs/LEARNING.md` (why, with worked numbers) · `docs/MAINTENANCE.md` (recurring checks). This file holds only the stable, load-bearing rules.
+Reference docs: `README.md` (overview, how to run, what is verified) · `docs/PHASES.md` (what each phase does) · `docs/LEARNING.md` (why, with worked numbers) · `docs/MAINTENANCE.md` (recurring checks). This file holds only the stable, load-bearing rules.
