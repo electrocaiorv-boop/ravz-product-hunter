@@ -23,6 +23,14 @@ from src.integrations.mercadolivre import (
 FAKE_TOKEN = "fake-access-token-diagnostic-0001"
 
 
+@pytest.fixture(autouse=True)
+def _no_stored_credential(monkeypatch, tmp_path):
+    """Keep a real .secrets/ token on the developer machine out of these tests."""
+    from src.integrations import mercadolivre_oauth as oauth
+    monkeypatch.setattr(oauth, "TOKEN_FILE", tmp_path / "absent-tokens.json")
+    monkeypatch.setattr(oauth, "_dotenv_access_token", lambda path=None: "")
+
+
 class _Response:
     def __init__(self, status_code, payload=None, headers=None):
         self.status_code = status_code

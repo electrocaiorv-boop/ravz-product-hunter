@@ -55,6 +55,7 @@ from src.integrations.mercadolivre import (
     MercadoLivreResponseError,
     search_products,
 )
+from src.integrations.mercadolivre_oauth import resolve_access_token
 
 PROBE_SITE = "site_resource"
 PROBE_LISTING_SEARCH = "listing_search"
@@ -98,15 +99,22 @@ class ProbeOutcome:
 
 
 def token_configured() -> bool:
-    """Whether a token is set. Never reads or returns the value."""
-    value = os.environ.get(ACCESS_TOKEN_ENV_VAR)
-    return bool(value and value.strip())
+    """Whether a usable token exists. Never returns the value.
+
+    Uses the same resolution as the marketplace provider
+    (`resolve_access_token`: explicit env > stored credential > .env), so
+    the diagnostic reports what `search_products()` will actually send.
+    Before this, only the environment variable was checked, so a token
+    stored by `authorize` was used by the listing probe but reported as
+    "NOT configured" and was not sent by the site probe.
+    """
+    return resolve_access_token().available
 
 
 def _authorization_header() -> dict:
-    token = os.environ.get(ACCESS_TOKEN_ENV_VAR)
-    if token and token.strip():
-        return {"Authorization": f"Bearer {token.strip()}"}
+    resolved = resolve_access_token()
+    if resolved.available:
+        return {"Authorization": f"Bearer {resolved.token.strip()}"}
     return {}
 
 
@@ -265,9 +273,9 @@ def main(argv=None) -> int:
         return 2
 
     print("Mercado Livre read-only diagnostic (2 requests, no retries)")
-    print(f"{ACCESS_TOKEN_ENV_VAR}: "
-          f"{'configured' if token_configured() else 'NOT configured'} "
-          "(value never shown)")
+    resolved = resolve_access_token()
+    print(f"access token: {'configured' if resolved.available else 'NOT configured'} "
+          f"(source: {resolved.source}; value never shown)")
     print()
     site = check_site_resource()
     print(site.describe())

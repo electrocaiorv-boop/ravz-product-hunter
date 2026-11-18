@@ -642,6 +642,7 @@ def test_token_file_is_owner_only_on_posix(tmp_path):
     assert oct(target.stat().st_mode)[-3:] == "600"
 
 
+@pytest.mark.real_token_path
 def test_default_token_path_is_inside_the_git_ignored_directory():
     assert oauth.TOKEN_FILE.parts[0] == ".secrets"
 

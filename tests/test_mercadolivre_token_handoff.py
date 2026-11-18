@@ -42,6 +42,26 @@ FUTURE = (NOW + timedelta(hours=5)).isoformat()
 PAST = (NOW - timedelta(hours=1)).isoformat()
 
 
+class _FrozenDatetime(datetime):
+    """`datetime` whose `now()` is pinned to NOW.
+
+    The provider-level tests below go through `resolve_access_token()`
+    without an explicit `now`, so they read the real clock. The fixture
+    tokens expire at NOW + 5h (2026-11-09), which made these tests pass
+    on the day they were written and fail from then on. Pinning the
+    clock keeps them deterministic.
+    """
+
+    @classmethod
+    def now(cls, tz=None):
+        return NOW if tz is None else NOW.astimezone(tz)
+
+
+@pytest.fixture(autouse=True)
+def _pin_oauth_clock(monkeypatch):
+    monkeypatch.setattr(oauth, "datetime", _FrozenDatetime)
+
+
 def _write(path, **overrides):
     document = {
         "access_token": FAKE_STORED_TOKEN,

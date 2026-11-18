@@ -1,14 +1,20 @@
 # Mercado Livre OAuth — architecture, security and runbook
 
-**Status: IMPLEMENTED, TESTED OFFLINE, NOT DEPLOYED, NOT AUTHORIZED.**
+**Status: IMPLEMENTED, DEPLOYED, AUTHORIZED. Live since 2026-11-17.**
 
 This document covers how RAVZ Product Hunter obtains a Mercado Livre
 access token. It is the companion to `docs/MERCADO_LIVRE_403.md`, which
-records the 403 investigation; that document's status line must not
-change until the live diagnostic in section 9 has actually run.
+records the 403 investigation. The live diagnostic in section 9 has
+run: `GET /sites/MLB` returns 200 with a real token (Obstacle A
+cleared), `GET /sites/MLB/search` still returns 403 (Obstacle B
+confirmed) -- both documents' status lines reflect this.
 
-Nothing here has been deployed and no authenticated request has been
-made.
+The Worker is deployed at `https://ravz-ml-oauth.ravztech.workers.dev`,
+the account is authorized, and a token is stored in `.secrets/` (access
+tokens last ~6h; refresh with
+`python -m src.integrations.mercadolivre_oauth refresh`). Fase 13
+(`docs/VISAO_GERAL.md` §4) runs real authenticated requests through
+this token routinely.
 
 ---
 
