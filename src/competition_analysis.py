@@ -129,6 +129,25 @@ All weights/scales/caps are module-level constants, meant to be
 recalibrated later against real outcomes -- not treated as final. This
 Competition Score is NOT wired into the Phase 1 Opportunity Scoring
 Engine yet.
+
+== Fase 13: this module's scoring math did NOT change ==
+
+`src/competition_models.build_competition_signals_from_category_sample()`
+builds `CompetitionSignals` from a working, differently-shaped source
+(top-N category best-sellers and their real seller offers) instead of
+the policy-blocked `/sites/MLB/search`. Every weighted component above
+reads `CompetitionSignals` fields exactly as before -- `unique_seller_ratio`
+and `price_dispersion` just arrive computed as per-product averages
+now (see that function's docstring), and `duplicate_title_ratio`
+arrives permanently `None` for that source, which this module already
+handles the same way it handles `listing_saturation_contribution` being
+permanently `None`: exclude from the weighted average, renormalize over
+what remains, and let `completeness_score` honestly reflect it.
+
+The ONE real change here is `sample_adequacy_score`'s denominator --
+see `analyze_competition()`'s docstring for why `requested_limit`
+(a page-size limit) doesn't apply to a sample shaped around
+`requested_top_n` (how many catalog entries were asked for).
 """
 
 from dataclasses import dataclass, field
@@ -147,6 +166,13 @@ CONFIDENCE_COMPLETENESS_WEIGHT = 0.6
 CONFIDENCE_SAMPLE_WEIGHT = 0.4
 MAX_CONFIDENCE_SINGLE_SOURCE = 55.0
 TOTAL_COMPONENT_GROUPS = 5  # includes the permanently-disabled saturation group -- see module docstring
+
+# Mirrors mercadolivre_catalog.DEFAULT_TOP_N. Duplicated, not imported --
+# this module stays provider-neutral (imports only src.competition_models).
+# Used only as sample_adequacy_score's denominator when signals came from
+# the Fase 13 category-catalog sample (signals.products_sampled is not
+# None); see analyze_competition() below.
+DEFAULT_CATEGORY_TOP_N = 5
 
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
@@ -172,6 +198,15 @@ class CompetitionAnalysisResult:
 
 
 def _seller_concentration_contribution(signals: CompetitionSignals) -> float | None:
+    """Fase 13 fix: the category-catalog builder reports
+    `seller_concentration_index` (already in "harder when high" units
+    -- see `competition_models.build_competition_signals_from_category_sample`'s
+    docstring for why `unique_seller_ratio` could not be reused here).
+    The flat-sample builder never sets that field, so it falls through
+    to the original `unique_seller_ratio`-based formula, unchanged.
+    """
+    if signals.seller_concentration_index is not None:
+        return _clamp(100 * signals.seller_concentration_index)
     if signals.unique_seller_ratio is None:
         return None
     return _clamp(100 * (1 - signals.unique_seller_ratio))
@@ -205,12 +240,32 @@ def _shipping_contribution(signals: CompetitionSignals) -> float | None:
     return _clamp(100 * signals.free_shipping_ratio)
 
 
-def analyze_competition(signals: CompetitionSignals, requested_limit: int = 10) -> CompetitionAnalysisResult:
+def analyze_competition(
+    signals: CompetitionSignals,
+    requested_limit: int = 10,
+    requested_top_n: int = DEFAULT_CATEGORY_TOP_N,
+) -> CompetitionAnalysisResult:
     """Compute a deterministic, provisional Competition Score and Confidence Score.
 
-    `requested_limit` affects ONLY the Confidence Score's sample-adequacy
-    term -- it has no effect on the Competition Score, since no
-    Competition Score component depends on sample size or limit.
+    `requested_limit`/`requested_top_n` affect ONLY the Confidence
+    Score's sample-adequacy term -- neither has any effect on the
+    Competition Score, since no Competition Score component depends on
+    sample size, limit or top_n.
+
+    Which one is used depends on where `signals` came from, detected by
+    `signals.products_sampled` (only the Fase 13 category-catalog
+    builder sets it):
+
+    - `signals.products_sampled is not None` (category-catalog sample):
+      adequacy = how many of the requested top-N highlighted
+      products/items actually yielded usable evidence --
+      `products_sampled / requested_top_n`. The old `requested_limit`
+      doesn't apply here: it was a page-size limit on a flat search,
+      and this sample's "limit" is how many catalog entries we asked
+      to look at, not how many offers came back per entry (Mercado
+      Livre decides that).
+    - otherwise (flat marketplace sample): the original
+      `marketplace_sample_size / requested_limit`, unchanged.
     """
     seller_c = _seller_concentration_contribution(signals)
     saturation_c = _listing_saturation_contribution(signals)
@@ -259,8 +314,13 @@ def analyze_competition(signals: CompetitionSignals, requested_limit: int = 10) 
     else:
         present_groups = sum(1 for c in (seller_c, saturation_c, price_c, duplicate_c, shipping_c) if c is not None)
         completeness_score = 100 * present_groups / TOTAL_COMPONENT_GROUPS
-        sample_size = signals.marketplace_sample_size or 0
-        sample_adequacy_score = _clamp(100 * min(sample_size, requested_limit) / requested_limit)
+        if signals.products_sampled is not None:
+            sample_adequacy_score = _clamp(
+                100 * min(signals.products_sampled, requested_top_n) / requested_top_n
+            )
+        else:
+            sample_size = signals.marketplace_sample_size or 0
+            sample_adequacy_score = _clamp(100 * min(sample_size, requested_limit) / requested_limit)
         internal_quality_score = (
             CONFIDENCE_COMPLETENESS_WEIGHT * completeness_score
             + CONFIDENCE_SAMPLE_WEIGHT * sample_adequacy_score
@@ -275,9 +335,22 @@ def analyze_competition(signals: CompetitionSignals, requested_limit: int = 10) 
         "price_max": signals.price_max,
         "free_shipping_ratio": signals.free_shipping_ratio,
         "condition_distribution": signals.condition_distribution,
+        # Fase 13 category-catalog provenance -- None for the flat-sample
+        # builder. The report layer uses these to say what the sample
+        # represents ("top N best-sellers of category X and their
+        # sellers"), never "the whole marketplace".
+        "category_id": signals.category_id,
+        "category_name": signals.category_name,
+        "products_sampled": signals.products_sampled,
+        "product_names": signals.product_names,
+        # Per-product decision-support rows (name, offer/seller counts,
+        # price range, official-store tri-state, free-shipping ratio).
+        # Purely descriptive -- see ProductObservation's docstring.
+        "product_table": signals.product_table,
     }
     derived = {
         "unique_seller_ratio": signals.unique_seller_ratio,
+        "seller_concentration_index": signals.seller_concentration_index,
         "price_mean": signals.price_mean,
         "price_median": signals.price_median,
         "price_dispersion": signals.price_dispersion,

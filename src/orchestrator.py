@@ -33,26 +33,44 @@ the returned result traces to a domain engine or the composition layer.
 
 == Shared evidence is fetched once (the central Phase 12A concern) ==
 
-Two provider calls feed five domains. Calling a provider twice would
-double its cost and rate-limit exposure, and -- worse -- could yield two
-*different* samples silently feeding two domains that are supposed to
-describe the same market.
-
     fetch_trend_data()  -- ONE Apify Google-Trends call
         |-> analyze_trend(TrendData)            -> Trend
         '-> build_demand_signals(trend_data,
                                   trend_metrics) -> Demand
 
-    search_products()   -- ONE Mercado Livre search
-        |-> build_competition_signals(items)     -> Competition
-        '-> build_demand_signals(marketplace_items)
-
-Note this is NOT the same thing as the Demand/Trend double-counting rule.
-Sharing one fetch is required; what is forbidden is letting both Demand
-and Trend earn weighted contributions from it. That rule lives in
+Calling a provider twice would double its cost and rate-limit exposure,
+and -- worse -- could yield two *different* samples silently feeding two
+domains that are supposed to describe the same market. This is NOT the
+same thing as the Demand/Trend double-counting rule. Sharing one fetch
+is required; what is forbidden is letting both Demand and Trend earn
+weighted contributions from it. That rule lives in
 `compose_opportunity()` and is not re-implemented here -- the
-orchestrator simply passes both results in and lets the composition layer
-elect one family representative.
+orchestrator simply passes both results in and lets the composition
+layer elect one family representative.
+
+== Fase 13: Competition's evidence source changed ==
+
+`search_products()` (`/sites/MLB/search`) is blocked by a Mercado Livre
+policy refusal that persists even with a valid token (see
+docs/MERCADO_LIVRE_403.md) -- calling it live would cost one guaranteed
+HTTP 403 every run for evidence Demand never weights anyway
+(`DemandAnalysis.marketplace_contribution` is permanently `None`, see
+CLAUDE.md's Evidence Family Invariant). This orchestrator therefore no
+longer calls it: `mercadolivre.py` and `search_products()` are untouched
+and still fully tested on their own, kept as a disabled source, per the
+Fase 13 decision in docs/VISAO_GERAL.md -- this module simply stops
+wiring it in.
+
+Competition's evidence now comes from a different, working chain:
+
+    sample_category_competition(query, top_n)  -- category-catalog chain
+        '-> build_competition_signals_from_category_sample(sample)
+                                                              -> Competition
+
+See `src/integrations/mercadolivre_catalog.py` for the chain itself
+(domain_discovery -> highlights -> per-product offers, bounded and
+sequential) and `src/competition_models.py` for how the two-level
+sample is turned into `CompetitionSignals`.
 
 == Manually supplied domains ==
 
@@ -72,7 +90,7 @@ Given the same request and the same injected providers, the pipeline
 produces the same result. The only non-determinism is in *which evidence
 the providers return* -- never in how that evidence is scored.
 
-Providers are injectable (`trend_fetcher`, `marketplace_searcher`) so the
+Providers are injectable (`trend_fetcher`, `catalog_sampler`) so the
 whole flow can be exercised with controlled fixtures and no network.
 """
 
@@ -81,7 +99,7 @@ import re
 from dataclasses import dataclass
 
 from src.competition_analysis import analyze_competition
-from src.competition_models import build_competition_signals
+from src.competition_models import build_competition_signals_from_category_sample
 from src.config import get_apify_token
 from src.demand_analysis import analyze_demand
 from src.demand_models import build_demand_signals
@@ -94,7 +112,11 @@ from src.integrations.apify_trends import (
 from src.integrations.mercadolivre import (
     ACCESS_TOKEN_ENV_VAR as ML_ACCESS_TOKEN_ENV_VAR,
     MercadoLivreError,
-    search_products,
+)
+from src.integrations.mercadolivre_catalog import (
+    DEFAULT_TOP_N as DEFAULT_CATEGORY_TOP_N,
+    MAX_TOP_N as MAX_CATEGORY_TOP_N,
+    sample_category_competition,
 )
 from src.logistics_analysis import analyze_logistics
 from src.logistics_models import LogisticsInputs
@@ -107,12 +129,8 @@ from src.supplier_analysis import analyze_supplier
 from src.supplier_models import SupplierInputs
 from src.trend_analysis import analyze_trend
 
-# Default marketplace page size. Mirrors the CLI's existing choice so a
-# single run and a manual Competition analysis sample the same way.
-DEFAULT_MARKETPLACE_LIMIT = 10
-
 PROVIDER_TRENDS = "apify:google-trends"
-PROVIDER_MARKETPLACE = "mercadolivre:search"
+PROVIDER_CATEGORY_CATALOG = "mercadolivre:category_catalog"
 
 STATUS_OK = "ok"
 STATUS_FAILED = "failed"
@@ -168,7 +186,7 @@ class OrchestrationRequest:
     query: str
     geo: str = DEFAULT_GEO
     timeframe: str = DEFAULT_TIMEFRAME
-    marketplace_limit: int = DEFAULT_MARKETPLACE_LIMIT
+    category_top_n: int = DEFAULT_CATEGORY_TOP_N
 
     margin_inputs: MarginInputs | None = None
     supplier_inputs: SupplierInputs | None = None
@@ -180,8 +198,11 @@ class OrchestrationRequest:
             raise ValueError("product_name must not be empty")
         if not self.query or not self.query.strip():
             raise ValueError("query must not be empty")
-        if self.marketplace_limit < 1:
-            raise ValueError("marketplace_limit must be at least 1")
+        if not 1 <= self.category_top_n <= MAX_CATEGORY_TOP_N:
+            raise ValueError(
+                f"category_top_n must be between 1 and {MAX_CATEGORY_TOP_N}, "
+                f"got {self.category_top_n}"
+            )
 
 
 @dataclass(frozen=True)
@@ -242,7 +263,7 @@ def _redact(text: str) -> str:
     this one.
 
     This layer stays because the orchestrator accepts **injected**
-    providers (`trend_fetcher`, `marketplace_searcher`). A caller's own
+    providers (`trend_fetcher`, `catalog_sampler`). A caller's own
     fetcher is outside the integrations' guarantee and can raise
     anything. Here the text also becomes a field on a returned result
     object, and the next phase persists results to a database -- so
@@ -316,26 +337,55 @@ def _fetch_trend_evidence(request, trend_fetcher):
     )
 
 
-def _fetch_marketplace_evidence(request, marketplace_searcher):
-    """ONE Mercado Livre search, shared by Competition and Demand."""
-    serves = ("competition", "demand")
+def _fetch_category_competition_evidence(request, catalog_sampler):
+    """ONE category-catalog chain (Fase 13), serving Competition only.
+
+    `catalog_sampler` itself performs several HTTP calls (domain_discovery,
+    highlights, per-product offers -- see
+    `src/integrations/mercadolivre_catalog.py`), bounded by
+    `request.category_top_n`. This records that whole chain as ONE
+    logical provider interaction, the same granularity
+    `_fetch_trend_evidence` uses for its one Apify call.
+
+    Returns (sample, ProviderCall). `sample` is `None` on a hard failure
+    (domain_discovery/highlights raised) OR when nothing was found
+    (`sample_category_competition` itself returns `None`) -- both are
+    reported `STATUS_FAILED`/explicit-unavailable to the caller; which of
+    the two happened is in the ProviderCall's `detail`.
+    """
+    serves = ("competition",)
     try:
-        items = marketplace_searcher(request.query, limit=request.marketplace_limit)
+        sample = catalog_sampler(request.query, top_n=request.category_top_n)
     except MercadoLivreError as exc:
         return None, ProviderCall(
-            PROVIDER_MARKETPLACE, STATUS_FAILED, serves, _describe_failure(exc)
+            PROVIDER_CATEGORY_CATALOG, STATUS_FAILED, serves, _describe_failure(exc)
         )
 
-    return items, ProviderCall(
-        PROVIDER_MARKETPLACE, STATUS_OK, serves, f"{len(items)} item(s) sampled"
+    if sample is None:
+        # Not a failure -- domain_discovery ran fine and legitimately
+        # found no matching category for this keyword. Still leaves
+        # Competition with nothing to compute from (there is no "zero
+        # competitors" result to report, unlike an empty search page),
+        # so the caller treats this the same as a failure for the
+        # purpose of `unavailable`, while the status here stays honest.
+        return None, ProviderCall(
+            PROVIDER_CATEGORY_CATALOG, STATUS_OK, serves,
+            "no category matched this query -- nothing to sample",
+        )
+
+    detail = (
+        f"category {sample.category_id} ({sample.category_name}): "
+        f"{len(sample.groups)} product(s)/item(s) sampled, "
+        f"{len(sample.skipped)} skipped"
     )
+    return sample, ProviderCall(PROVIDER_CATEGORY_CATALOG, STATUS_OK, serves, detail)
 
 
 def run_opportunity_analysis(
     request: OrchestrationRequest,
     *,
     trend_fetcher=None,
-    marketplace_searcher=None,
+    catalog_sampler=None,
 ) -> OrchestrationResult:
     """Run the deterministic pipeline for one product candidate.
 
@@ -356,8 +406,8 @@ def run_opportunity_analysis(
     """
     if trend_fetcher is None:
         trend_fetcher = fetch_trend_data
-    if marketplace_searcher is None:
-        marketplace_searcher = search_products
+    if catalog_sampler is None:
+        catalog_sampler = sample_category_competition
 
     calls: list[ProviderCall] = []
     unavailable: list[str] = []
@@ -374,13 +424,17 @@ def run_opportunity_analysis(
             f"{trend_call.detail}"
         )
 
-    items, marketplace_call = _fetch_marketplace_evidence(
-        request, marketplace_searcher
+    sample, catalog_call = _fetch_category_competition_evidence(
+        request, catalog_sampler
     )
-    calls.append(marketplace_call)
-    if not marketplace_call.succeeded:
+    calls.append(catalog_call)
+    # Keyed on `sample is None`, not on `catalog_call.succeeded`: a
+    # legitimate "no category matched" result is STATUS_OK (the call
+    # itself didn't fail) but still leaves Competition with nothing to
+    # compute from, which `unavailable` must still reflect honestly.
+    if sample is None:
         unavailable.append(
-            f"marketplace evidence (Mercado Livre search): {marketplace_call.detail}"
+            f"competition evidence (Mercado Livre category catalog): {catalog_call.detail}"
         )
 
     notes.append(
@@ -389,32 +443,35 @@ def run_opportunity_analysis(
     )
 
     # -- provider-backed domains ---------------------------------------
-    # Demand reads BOTH sources. It is built even when both are missing:
-    # build_demand_signals records each absence honestly and
-    # analyze_demand withholds its score rather than guessing.
+    # Demand no longer receives marketplace evidence: the only source
+    # that fed it (/sites/MLB/search) is blocked (see module docstring),
+    # and DemandAnalysis.marketplace_contribution is permanently None
+    # regardless -- Demand is built from the trend evidence alone.
     demand_result = analyze_demand(
         build_demand_signals(
             request.query,
             request.geo,
             trend_data=trend_data,
             trend_metrics=trend_metrics,
-            marketplace_items=items,
         )
     )
 
-    # Competition is analyzed only when the marketplace call succeeded.
-    # Running it on `None` produced a component that was correctly
-    # unavailable but carried `evidence_value=0.0` -- a number standing
-    # in for "we do not know", where every other unavailable component
-    # reports None. It also attached the adapter's hardcoded
-    # "unreachable" reason to failures that were not unreachability.
-    # Passing None lets the ProviderCall above be the sole authority on
-    # why the evidence is missing.
+    # Competition is analyzed only when the chain itself didn't hard-fail
+    # (a sample with empty `groups` -- category found, nothing usable --
+    # still counts: `build_competition_signals_from_category_sample`
+    # reports that honestly). `sample is None` means domain_discovery or
+    # highlights raised, or no category matched at all -- analyzing that
+    # directly previously produced a component that was correctly
+    # `available=False` but carried a fabricated `evidence_value=0.0`
+    # (see the historical note in `_fetch_marketplace_evidence`'s
+    # removal, Fase 13). Passing `None` straight to `compose_opportunity()`
+    # lets the ProviderCall above be the sole authority on why evidence
+    # is missing.
     competition_result = None
-    if items is not None:
+    if sample is not None:
         competition_result = analyze_competition(
-            build_competition_signals(request.query, marketplace_items=items),
-            requested_limit=request.marketplace_limit,
+            build_competition_signals_from_category_sample(sample),
+            requested_top_n=request.category_top_n,
         )
 
     # -- manually investigated domains ---------------------------------

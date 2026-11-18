@@ -58,6 +58,14 @@ SITE_ID = "MLB"
 DEFAULT_TIMEOUT = 10
 ACCESS_TOKEN_ENV_VAR = "MERCADO_LIVRE_ACCESS_TOKEN"
 
+# Default page size for search_products(). Lives here, not in
+# src/orchestrator.py, because this is purely a property of THIS
+# endpoint -- the Phase 12A orchestrator stopped calling it live in
+# Fase 13 (see src/orchestrator.py's module docstring), but the Phase
+# 12B agent's `search_marketplace` research tool (src/agent/tools.py)
+# still calls it directly and needs a default limit of its own.
+DEFAULT_MARKETPLACE_LIMIT = 10
+
 
 class MercadoLivreError(Exception):
     """Base class for all Mercado Livre integration failures."""
@@ -108,6 +116,11 @@ class MercadoLivreItem:
     permalink: str | None
     free_shipping: bool | None
     available_quantity: int | None
+    # Fase 13: present (as an int, or `null` meaning "not an official
+    # store") in /products/{id}/items -- live-verified 2026-11-17.
+    # Default `None` so every pre-Fase-13 construction of this
+    # dataclass (across the test suite) stays valid unchanged.
+    official_store_id: int | None = None
 
 
 def _map_item(raw: dict) -> MercadoLivreItem:
@@ -120,6 +133,7 @@ def _map_item(raw: dict) -> MercadoLivreItem:
         price=raw.get("price"),
         currency_id=raw.get("currency_id"),
         seller_id=seller.get("id"),
+        official_store_id=raw.get("official_store_id"),
         category_id=raw.get("category_id"),
         condition=raw.get("condition"),
         permalink=raw.get("permalink"),

@@ -5,6 +5,8 @@ No test in this phase touches the network, and none needs an
 fixtures, so the whole loop is exercised deterministically.
 """
 
+from types import SimpleNamespace
+
 from src.integrations.mercadolivre import MercadoLivreItem
 from src.trend_models import TrendData, TrendPoint
 
@@ -47,6 +49,47 @@ def make_marketplace_searcher(counter=None, count=5, titles=None):
         ]
 
     return searcher
+
+
+def make_catalog_sampler(counter=None, count=3, category_id="MLB1000",
+                         category_name="Categoria Fixture"):
+    """Fake Fase 13 category-catalog chain: `count` catalog products,
+    each with 2 real seller offers, duck-typed like
+    `mercadolivre_catalog.CategoryCompetitionSample`.
+    """
+
+    def sampler(query, top_n=5):
+        if counter is not None:
+            counter.append((query, top_n))
+        groups = [
+            SimpleNamespace(
+                product_id=f"MLB{i}",
+                product_name=f"Produto {i}",
+                is_standalone_item=False,
+                offers=[
+                    MercadoLivreItem(
+                        item_id=f"MLB{i}-OFFER1", title=f"Produto {i}",
+                        price=100.0 + i * 9, currency_id="BRL", seller_id=i % 3,
+                        category_id=category_id, condition="new", permalink=None,
+                        free_shipping=i % 2 == 0, available_quantity=None,
+                    ),
+                    MercadoLivreItem(
+                        item_id=f"MLB{i}-OFFER2", title=f"Produto {i}",
+                        price=110.0 + i * 9, currency_id="BRL",
+                        seller_id=(i + 1) % 3, category_id=category_id,
+                        condition="new", permalink=None,
+                        free_shipping=i % 2 == 1, available_quantity=None,
+                    ),
+                ],
+            )
+            for i in range(min(count, top_n))
+        ]
+        return SimpleNamespace(
+            query=query, category_id=category_id, category_name=category_name,
+            requested_top_n=top_n, groups=groups, skipped=[],
+        )
+
+    return sampler
 
 
 class ScriptedLLM:

@@ -1,7 +1,7 @@
 """Phase 12A orchestration tests.
 
 Every test uses controlled fixtures injected via `trend_fetcher` /
-`marketplace_searcher`. **No test requires network access**, and none is
+`catalog_sampler`. **No test requires network access**, and none is
 skipped when providers are unreachable -- the pipeline is exercised
 end to end regardless.
 
@@ -10,9 +10,17 @@ sequences work, calls each provider once, translates failures into
 explicit unavailable evidence, and delegates every judgment to
 `compose_opportunity()`. The scoring semantics themselves are owned by
 the Phase 11 tests and are not re-asserted here.
+
+Fase 13: Competition's evidence now comes from
+`catalog_sampler` (the category-catalog chain), not from
+`/sites/MLB/search`. `search_products()`/`mercadolivre.py` are
+untouched and still have their own test file
+(`test_mercadolivre_integration.py`); this file no longer calls them at
+all, since the orchestrator no longer wires them in.
 """
 
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -40,7 +48,8 @@ from src.opportunity_models import (
     READINESS_READY,
 )
 from src.orchestrator import (
-    PROVIDER_MARKETPLACE,
+    MAX_CATEGORY_TOP_N,
+    PROVIDER_CATEGORY_CATALOG,
     PROVIDER_TRENDS,
     STATUS_FAILED,
     STATUS_NOT_SUPPLIED,
@@ -73,7 +82,7 @@ class Counter:
 
     def __init__(self):
         self.trend = 0
-        self.marketplace = 0
+        self.catalog = 0
 
 
 def make_trend_fetcher(counter, values=None, available=True):
@@ -97,20 +106,37 @@ def make_trend_fetcher(counter, values=None, available=True):
     return fetcher
 
 
-def make_marketplace_searcher(counter, count=4):
-    def searcher(query, limit=10):
-        counter.marketplace += 1
-        return [
-            MercadoLivreItem(
-                item_id=f"MLB{i}", title=f"Item {i}", price=100.0 + i * 15,
-                currency_id="BRL", seller_id=i % 3, category_id="MLB1000",
-                condition="new", permalink=None, free_shipping=i % 2 == 0,
-                available_quantity=50,
-            )
-            for i in range(count)
-        ]
+def make_catalog_sampler(counter, count=2, offers_per_product=2, category_id="MLB1000",
+                         category_name="Categoria Teste"):
+    """Fake Fase 13 category-catalog chain, duck-typed like
+    `mercadolivre_catalog.CategoryCompetitionSample`."""
 
-    return searcher
+    def sampler(query, top_n=5):
+        counter.catalog += 1
+        groups = [
+            SimpleNamespace(
+                product_id=f"MLB{i}",
+                product_name=f"Produto {i}",
+                is_standalone_item=False,
+                offers=[
+                    MercadoLivreItem(
+                        item_id=f"MLB{i}-{j}", title=f"Produto {i}",
+                        price=100.0 + i * 15 + j * 5, currency_id="BRL",
+                        seller_id=(i + j) % 3, category_id=category_id,
+                        condition="new", permalink=None,
+                        free_shipping=(i + j) % 2 == 0, available_quantity=None,
+                    )
+                    for j in range(offers_per_product)
+                ],
+            )
+            for i in range(min(count, top_n))
+        ]
+        return SimpleNamespace(
+            query=query, category_id=category_id, category_name=category_name,
+            requested_top_n=top_n, groups=groups, skipped=[],
+        )
+
+    return sampler
 
 
 def failing_trend_fetcher(exc):
@@ -120,11 +146,20 @@ def failing_trend_fetcher(exc):
     return fetcher
 
 
-def failing_marketplace_searcher(exc):
-    def searcher(query, limit=10):
+def failing_catalog_sampler(exc):
+    def sampler(query, top_n=5):
         raise exc
 
-    return searcher
+    return sampler
+
+
+def no_category_catalog_sampler():
+    """A legitimate empty result -- no category matched this query."""
+
+    def sampler(query, top_n=5):
+        return None
+
+    return sampler
 
 
 def margin_inputs(**overrides):
@@ -186,12 +221,12 @@ def full_request(**overrides):
     return OrchestrationRequest(**base)
 
 
-def run(request=None, counter=None, trend_fetcher=None, marketplace_searcher=None):
+def run(request=None, counter=None, trend_fetcher=None, catalog_sampler=None):
     counter = counter or Counter()
     return run_opportunity_analysis(
         request or full_request(),
         trend_fetcher=trend_fetcher or make_trend_fetcher(counter),
-        marketplace_searcher=marketplace_searcher or make_marketplace_searcher(counter),
+        catalog_sampler=catalog_sampler or make_catalog_sampler(counter),
     )
 
 
@@ -249,7 +284,7 @@ def test_each_provider_is_called_at_most_once():
     counter = Counter()
     run(counter=counter)
     assert counter.trend == 1, "Apify must be called once, not once per domain"
-    assert counter.marketplace == 1, "Mercado Livre must be called once"
+    assert counter.catalog == 1, "the category-catalog chain must be called once"
 
 
 def test_one_trend_call_serves_both_trend_and_demand():
@@ -265,15 +300,19 @@ def test_one_trend_call_serves_both_trend_and_demand():
     assert component(result, "demand").available is True
 
 
-def test_one_marketplace_call_serves_both_competition_and_demand():
+def test_one_catalog_call_serves_competition_only():
+    """Fase 13: unlike the old blocked search, this source feeds ONLY
+    Competition -- Demand never weights marketplace evidence anyway
+    (`DemandAnalysis.marketplace_contribution` is permanently None), so
+    there is nothing left for this chain to share with Demand."""
     counter = Counter()
     result = run(counter=counter)
 
     call = next(c for c in result.provider_calls
-                if c.provider == PROVIDER_MARKETPLACE)
+                if c.provider == PROVIDER_CATEGORY_CATALOG)
     assert call.status == STATUS_OK
-    assert set(call.serves) == {"competition", "demand"}
-    assert counter.marketplace == 1
+    assert set(call.serves) == {"competition"}
+    assert counter.catalog == 1
 
 
 def test_shared_demand_trend_evidence_is_never_double_counted():
@@ -333,13 +372,13 @@ def test_trend_provider_failure_becomes_explicit_unavailable(exc):
         MercadoLivreResponseError(403, "Mercado Livre returned HTTP 403"),
     ],
 )
-def test_marketplace_provider_failure_becomes_explicit_unavailable(exc):
-    result = run(marketplace_searcher=failing_marketplace_searcher(exc))
+def test_catalog_provider_failure_becomes_explicit_unavailable(exc):
+    result = run(catalog_sampler=failing_catalog_sampler(exc))
 
     call = next(c for c in result.provider_calls
-                if c.provider == PROVIDER_MARKETPLACE)
+                if c.provider == PROVIDER_CATEGORY_CATALOG)
     assert call.status == STATUS_FAILED
-    assert any("marketplace evidence" in u for u in result.unavailable)
+    assert any("competition evidence" in u for u in result.unavailable)
 
     competition = component(result, "competition")
     assert competition.available is False
@@ -349,9 +388,43 @@ def test_marketplace_provider_failure_becomes_explicit_unavailable(exc):
     assert result.opportunity.classification is None
 
 
+def test_no_category_matched_is_not_a_failure_but_leaves_competition_unavailable():
+    """Fase 13: a legitimate empty domain_discovery result is NOT the
+    same thing as a provider error -- the chain ran fine, there is just
+    nothing to sample. The ProviderCall reflects that honestly (OK, not
+    FAILED) while Competition still ends up unavailable."""
+    result = run(catalog_sampler=no_category_catalog_sampler())
+
+    call = next(c for c in result.provider_calls
+                if c.provider == PROVIDER_CATEGORY_CATALOG)
+    assert call.status == STATUS_OK
+    assert "no category matched" in call.detail
+
+    competition = component(result, "competition")
+    assert competition.available is False
+    assert any("competition evidence" in u for u in result.unavailable)
+    assert result.opportunity.readiness == READINESS_INCOMPLETE_EVIDENCE
+
+
+def test_category_catalog_sample_with_no_usable_groups_degrades_not_aborts():
+    """Fase 13 approved decision: degrade (Competition unavailable), not
+    abort the run, when the category was found but nothing in it could
+    be sampled (e.g. every highlighted entry failed)."""
+    sampler = lambda query, top_n=5: SimpleNamespace(
+        query=query, category_id="MLB1", category_name="X",
+        requested_top_n=top_n, groups=[], skipped=["every entry failed"],
+    )
+    result = run(catalog_sampler=sampler)
+
+    competition = component(result, "competition")
+    assert competition.available is False
+    assert result.opportunity.opportunity_score is not None
+    assert component(result, "margin").available is True
+
+
 def test_provider_failure_does_not_abort_the_run():
     """One dead provider must not cost the other domains' evidence."""
-    result = run(marketplace_searcher=failing_marketplace_searcher(
+    result = run(catalog_sampler=failing_catalog_sampler(
         MercadoLivreResponseError(403, "HTTP 403")))
 
     assert component(result, "trend").available is True
@@ -363,7 +436,7 @@ def test_provider_failure_does_not_abort_the_run():
 def test_both_providers_failing_still_composes_a_result():
     result = run(
         trend_fetcher=failing_trend_fetcher(ApifyTrendsTimeoutError("timeout")),
-        marketplace_searcher=failing_marketplace_searcher(
+        catalog_sampler=failing_catalog_sampler(
             MercadoLivreTimeoutError("timeout")),
     )
 
@@ -644,9 +717,12 @@ def test_credential_in_a_wrapped_transport_error_is_redacted(monkeypatch):
     # `trend_fetcher` is deliberately NOT passed, so the orchestrator
     # resolves its default -- the real fetch_trend_data. `run()` cannot be
     # used here: it substitutes a fixture fetcher when given None.
+    # `catalog_sampler` IS injected (unrelated to this test's concern)
+    # purely to keep the run offline -- the default would otherwise hit
+    # the real category-catalog chain.
     result = run_opportunity_analysis(
         full_request(),
-        marketplace_searcher=make_marketplace_searcher(Counter()),
+        catalog_sampler=make_catalog_sampler(Counter()),
     )
 
     trend_call = provider_call(result, PROVIDER_TRENDS)
@@ -667,10 +743,16 @@ def test_credential_in_a_wrapped_transport_error_is_redacted(monkeypatch):
     assert "InvalidHeader" in trend_call.detail
 
 
-def test_marketplace_credential_in_a_wrapped_transport_error_is_redacted(
+def test_catalog_credential_in_a_wrapped_transport_error_is_redacted(
     monkeypatch,
 ):
-    """The same leak path through the other integration."""
+    """The same leak path through the Fase 13 category-catalog integration.
+
+    `search_marketplace`/`mercadolivre.py` is no longer in the
+    orchestrator's live path (see module docstring), so this is now the
+    integration that actually sends the token on a real orchestrator
+    run -- `src/integrations/mercadolivre_catalog.py`.
+    """
     configured = FIXTURE_SECRET_B
     monkeypatch.setenv(ML_ACCESS_TOKEN_ENV_VAR, configured + "\n")
 
@@ -681,17 +763,17 @@ def test_marketplace_credential_in_a_wrapped_transport_error_is_redacted(
         ).prepare()
         raise AssertionError("expected requests to reject the header")
 
-    monkeypatch.setattr("src.integrations.mercadolivre.requests.get",
+    monkeypatch.setattr("src.integrations.mercadolivre_catalog.requests.get",
                         exploding_get)
 
-    # `marketplace_searcher` omitted: the real search_products runs.
+    # `catalog_sampler` omitted: the real sample_category_competition runs.
     result = run_opportunity_analysis(
         full_request(),
         trend_fetcher=make_trend_fetcher(Counter()),
     )
 
-    market_call = provider_call(result, PROVIDER_MARKETPLACE)
-    assert market_call.status == STATUS_FAILED
+    catalog_call = provider_call(result, PROVIDER_CATEGORY_CATALOG)
+    assert catalog_call.status == STATUS_FAILED
 
     blob = " ".join(
         [c.detail or "" for c in result.provider_calls]
@@ -762,7 +844,8 @@ def test_credential_values_are_stripped_from_failure_text(carrier):
     [
         {"product_name": "  ", "query": "q"},
         {"product_name": "p", "query": ""},
-        {"product_name": "p", "query": "q", "marketplace_limit": 0},
+        {"product_name": "p", "query": "q", "category_top_n": 0},
+        {"product_name": "p", "query": "q", "category_top_n": MAX_CATEGORY_TOP_N + 1},
     ],
 )
 def test_invalid_request_is_rejected(kwargs):
@@ -770,15 +853,15 @@ def test_invalid_request_is_rejected(kwargs):
         OrchestrationRequest(**kwargs)
 
 
-def test_marketplace_limit_is_forwarded_to_the_provider():
+def test_category_top_n_is_forwarded_to_the_provider():
     seen = {}
 
-    def searcher(query, limit=10):
-        seen["limit"] = limit
-        return []
+    def sampler(query, top_n=5):
+        seen["top_n"] = top_n
+        return None
 
-    run(full_request(marketplace_limit=3), marketplace_searcher=searcher)
-    assert seen["limit"] == 3
+    run(full_request(category_top_n=3), catalog_sampler=sampler)
+    assert seen["top_n"] == 3
 
 
 # -- provider injection must be patchable (regression) -------------------
@@ -795,24 +878,24 @@ def test_module_level_provider_patching_is_effective(monkeypatch):
     """
     import src.orchestrator as orch
 
-    used = {"trend": False, "marketplace": False}
+    used = {"trend": False, "catalog": False}
 
     def patched_trend(query, geo="BR", timeframe="today 12-m"):
         used["trend"] = True
         raise ApifyTrendsTimeoutError("patched: no network")
 
-    def patched_search(query, limit=10):
-        used["marketplace"] = True
+    def patched_sampler(query, top_n=5):
+        used["catalog"] = True
         raise MercadoLivreTimeoutError("patched: no network")
 
     monkeypatch.setattr(orch, "fetch_trend_data", patched_trend)
-    monkeypatch.setattr(orch, "search_products", patched_search)
+    monkeypatch.setattr(orch, "sample_category_competition", patched_sampler)
 
     # No explicit injection -- exercises the default-resolution path.
     result = orch.run_opportunity_analysis(full_request())
 
     assert used["trend"], "module-level patch of fetch_trend_data was ignored"
-    assert used["marketplace"], "module-level patch of search_products was ignored"
+    assert used["catalog"], "module-level patch of sample_category_competition was ignored"
     assert len(result.failed_providers) == 2
     assert all("patched: no network" in (c.detail or "")
                for c in result.failed_providers)
@@ -830,7 +913,7 @@ def test_explicit_injection_still_overrides_the_default(monkeypatch):
     result = run_opportunity_analysis(
         full_request(),
         trend_fetcher=make_trend_fetcher(counter),
-        marketplace_searcher=make_marketplace_searcher(counter),
+        catalog_sampler=make_catalog_sampler(counter),
     )
     assert counter.trend == 1
     assert result.opportunity.readiness == READINESS_READY
@@ -843,7 +926,7 @@ def test_explicit_injection_still_overrides_the_default(monkeypatch):
 # the honest answer was "we do not know".
 
 
-def test_failed_marketplace_leaves_competition_without_an_evidence_value():
+def test_failed_catalog_chain_leaves_competition_without_an_evidence_value():
     """A dead provider must not yield `evidence_value=0.0`.
 
     The orchestrator used to run `analyze_competition` on `None`. The
@@ -853,7 +936,7 @@ def test_failed_marketplace_leaves_competition_without_an_evidence_value():
     standing in for no observation at all. Every other unavailable
     component reports `None` there.
     """
-    result = run(marketplace_searcher=failing_marketplace_searcher(
+    result = run(catalog_sampler=failing_catalog_sampler(
         MercadoLivreTimeoutError("Mercado Livre did not respond within 10s")))
 
     competition = component(result, "competition")
@@ -863,17 +946,17 @@ def test_failed_marketplace_leaves_competition_without_an_evidence_value():
     assert competition.evidence_value is None
 
 
-def test_failed_marketplace_reason_is_the_actual_failure():
+def test_failed_catalog_chain_reason_is_the_actual_failure():
     """The reported reason must be the failure, not a generic stand-in.
 
     Analyzing `None` attached the adapter's hardcoded "unreachable"
     wording to every failure mode, including ones that were not
     unreachability.
     """
-    result = run(marketplace_searcher=failing_marketplace_searcher(
+    result = run(catalog_sampler=failing_catalog_sampler(
         MercadoLivreResponseError(status_code=403, message="403 Forbidden")))
 
-    call = provider_call(result, PROVIDER_MARKETPLACE)
+    call = provider_call(result, PROVIDER_CATEGORY_CATALOG)
     assert call.status == STATUS_FAILED
     assert "403" in (call.detail or "")
     assert any("403" in reason for reason in result.unavailable)
@@ -904,16 +987,16 @@ def test_provider_call_status_is_readable_as_three_distinct_states():
     called and failed. Reading that through one boolean collapses
     "attempted and lost" into "never attempted".
     """
-    # Margin omitted, so one call is `not_supplied`; the marketplace is
+    # Margin omitted, so one call is `not_supplied`; the catalog chain is
     # made to fail, so another is `failed`. All three states coexist.
     result = run(
         full_request(margin_inputs=None),
-        marketplace_searcher=failing_marketplace_searcher(
+        catalog_sampler=failing_catalog_sampler(
             MercadoLivreTimeoutError("timeout")),
     )
 
     ok = provider_call(result, PROVIDER_TRENDS)
-    failed = provider_call(result, PROVIDER_MARKETPLACE)
+    failed = provider_call(result, PROVIDER_CATEGORY_CATALOG)
     absent = next(c for c in result.provider_calls
                   if c.status == STATUS_NOT_SUPPLIED)
 

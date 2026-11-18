@@ -5209,3 +5209,202 @@ Cláusula por cláusula:
   `opportunity_integration` importa só o contrato transforma uma
   intenção de design numa propriedade verificável -- e um `import`
   acidental passa a quebrar o build em vez de apodrecer em silêncio.
+
+## Fase 13 — Fonte de concorrência por catálogo (reconstruindo a evidência de Concorrência)
+
+**Problema:** `/sites/MLB/search`, a única fonte da Fase 6, é bloqueada
+pelo Mercado Livre por política -- confirmado ao vivo com token OAuth
+válido (`docs/MERCADO_LIVRE_403.md`). Sem ela, Concorrência nunca tem
+evidência, e como Concorrência é requisito comercial, nenhuma análise
+chega a `READY`. Autenticar não resolveu: o bloqueio é da política do
+endpoint, não da ausência de token.
+
+**Solução:** uma cadeia diferente, de endpoints que *funcionam* com o
+mesmo token: palavra-chave → `/sites/MLB/domain_discovery/search`
+(qual categoria?) → `/highlights/MLB/category/{id}` (quem vende mais
+nessa categoria) → para cada um dos top N: `/products/{id}` +
+`/products/{id}/items` (produto de catálogo: nome + ofertas reais de
+vendedores) ou `/items/{id}` (anúncio avulso). Nunca `/products/search`
+-- esse endpoint descreve um *produto*, não uma *oferta*, e esse
+projeto já havia decidido na Fase 6 que confundir as duas coisas é
+exatamente o erro que as regras de evidência existem para prevenir.
+
+### A amostra agora tem duas camadas, e isso muda o que é comparável
+
+A Fase 6 original tinha uma lista plana de ~10 anúncios de uma busca
+livre. A Fase 13 tem N produtos mais vendidos da categoria, e dentro de
+cada produto, as ofertas (vendedores) que competem *naquele exato
+item*. Ofertas de produtos diferentes não competem entre si -- são
+itens diferentes, às vezes em faixas de preço bem diferentes dentro da
+mesma categoria (um fone de R$ 50 e um de R$ 400 estão na mesma
+categoria "Fones de Ouvido", mas não disputam o mesmo comprador do
+mesmo jeito que dois vendedores do mesmo produto disputam).
+
+Isso forçou dois componentes a serem recalculados como **médias por
+produto**, não sobre a amostra achatada:
+
+- `seller_concentration` (campo `seller_concentration_index`, não
+  `unique_seller_ratio` -- ver a correção de 18/11/2026 abaixo):
+  `1 / nº de vendedores distintos` por produto, depois média entre os
+  produtos amostrados. É o HHI (Índice Herfindahl-Hirschman) assumindo
+  participação igual entre os vendedores -- a aproximação correta
+  quando só se tem a *presença* de cada vendedor, nunca o volume ou a
+  participação real de mercado. Alto = poucos vendedores = concentrado
+  = mais difícil para quem está entrando.
+- `price_crowding`: dispersão de preço entre produtos diferentes da
+  categoria mede variedade de catálogo, não briga de preço entre
+  vendedores. Calculada como dispersão **dentro** de cada produto,
+  depois média entre produtos -- e só para produtos com pelo menos 2
+  ofertas com preço, porque dispersão não é definida com 1 ponto.
+
+A assimetria entre os dois componentes para um produto de 1 oferta é
+deliberada, não uma inconsistência: o índice de concentração é
+matematicamente definido mesmo com 1 oferta (1/1 = 1.0 -- a leitura
+*correta* para esse caso, o mais difícil possível: nenhum concorrente
+catalogado), então ele entra na média normalmente; a dispersão de
+preço não é definida com 1 ponto, então esse produto simplesmente não
+contribui para aquela média -- não é um `0` fabricado, é ausência
+real.
+
+### Anúncios avulsos (`kind="ITEM"`) exigem uma exclusão deliberada
+
+Um highlight pode ser um produto de catálogo (`PRODUCT`, com vários
+vendedores concorrendo) ou um anúncio único e avulso (`ITEM`, um
+vendedor sem concorrência direta registrada no catálogo). Um anúncio
+avulso, se entrasse nas médias de `seller_concentration`/
+`price_crowding`, teria 1 vendedor/1 oferta -- um número que, nesse
+caso específico, não erra o VALOR (1 vendedor é de fato concentração
+máxima), mas erra o que está sendo medido: um anúncio avulso não é "um
+produto com um vendedor", é "nenhum dado de concorrência catalogado
+para comparar". São ausências de natureza diferente, e misturá-las
+esconderia essa diferença. A decisão: excluir anúncios avulsos dessas
+duas médias, mantê-los no frete e no contexto observado (onde esse
+artefato não existe).
+
+### Um bug achado na própria validação ao vivo, pelo usuário
+
+A primeira versão desta fase reaproveitou a fórmula da amostra plana
+antiga -- `vendedores únicos / total de ofertas` -- calculada por
+produto em vez de sobre a lista inteira, sem rederivar se ela ainda
+fazia sentido na nova forma. Não fazia: dentro de UM produto de
+catálogo, o Mercado Livre não devolve duas ofertas do mesmo vendedor,
+então "vendedores distintos" e "total de ofertas" são quase sempre
+iguais, **para qualquer número de vendedores** -- 1, 2 ou 10, a razão
+fica perto de 1.0 do mesmo jeito. A fórmula não carregava nenhum sinal
+de concentração nessa forma de amostra; e no caso extremo (1 oferta),
+1/1 = 1.0 lido por `100 * (1 - razão)` dava contribuição 0 -- "nenhuma
+concentração" para o caso que É a concentração máxima (nenhum outro
+vendedor catalogado).
+
+O resultado ao vivo (`competition_score=14.47`, lido como "fácil")
+contradizia uma observação já registrada neste mesmo documento, no
+mesmo dia: os produtos mais vendidos amostrados eram majoritariamente
+de marca oficial, com 1-2 ofertas cada -- o tipo de produto que
+deveria ler como DIFÍCIL de entrar, não fácil. O número não foi
+checado contra o que já se sabia antes de ser aceito como resposta.
+Quem encontrou a contradição foi o usuário revisando o resultado, não
+um teste -- os testes automatizados validavam a fórmula contra ela
+mesma (a matemática do `1 - razão` estava certa), não contra se a
+razão media a coisa certa.
+
+A correção: um campo novo, `seller_concentration_index`, com
+`1 / nº de vendedores distintos` por produto -- nunca um reaproveite
+silencioso de `unique_seller_ratio` com outro significado, porque esse
+é exatamente o tipo de erro que as regras de evidência do projeto já
+proíbem (contar algo que o nome não representa mais). `unique_seller_ratio`
+fica `None` para essa fonte, com uma nota explicando por quê, em vez de
+continuar presente com um número que não quer dizer nada aqui.
+
+### `duplicate_title_ratio` não sobreviveu à mudança de amostra
+
+Na Fase 6 original, títulos duplicados entre anúncios distintos eram
+um proxy fraco para "anúncio templated/spam". Na amostra por catálogo,
+todas as ofertas de um mesmo produto compartilham o nome daquele
+produto *por construção* -- duplicidade mediria "quantos produtos
+amostrados tiveram mais de 1 vendedor", não anúncio templated. Era
+exatamente o tipo de erro que as regras do projeto já proíbem: pontuar
+algo que o nome do componente não representa mais. `duplicate_title_ratio`
+ficou permanentemente `None` para essa fonte, do mesmo jeito que
+`listing_saturation` já era permanentemente `None` desde a Fase 6.
+
+### Um tipo de highlight não documentado apareceu ao vivo, e não foi adivinhado
+
+A captura real (17/11/2026, "fone bluetooth") trouxe um terceiro tipo
+de highlight, `USER_PRODUCT`, na posição 14 de 20 -- não previsto pelo
+plano original (`PRODUCT`/`ITEM`). Não existe confirmação de qual
+endpoint serve esse tipo. A decisão: tratá-lo como não suportado,
+descartá-lo com o motivo registrado (`skipped`), e não gastar nenhuma
+requisição adivinhando um endpoint para ele. É o mesmo princípio de
+`docs/MERCADO_LIVRE_403.md` aplicado a um caso novo: não adivinhar
+contra uma API real.
+
+### O resultado real (18/11/2026, "fone bluetooth", depois da correção)
+
+Categoria `MLB196208` (Fones de Ouvido), 5 produtos amostrados com nome
+real. `competition_score = 31.54` (antes da correção: 14.47),
+`confidence_score = 55.0` (teto de fonte única, inalterado desde a
+Fase 6), `seller_concentration_index = 0.413`.
+
+| Produto | Ofertas | Vendedores | Preço min | Preço max | Loja oficial | % frete grátis |
+|---|---|---|---|---|---|---|
+| Soundcore P20i (Anker) | 1 | 1 | 129,00 | 129,00 | sim | 100% |
+| "Pro 4" (genérico) | 72 | 70 | 10,00 | 3382,00 | sim | 22% |
+| Soundcore P30i (Anker) | 1 | 1 | 196,00 | 196,00 | sim | 100% |
+| Xiaomi Redmi Buds 6 Play | 100 | 90 | 57,61 | 99,00 | sim | 85% |
+| Samsung Galaxy Buds Core | 30 | 24 | 228,40 | 699,00 | sim | 100% |
+
+A amostra real mistura dois tipos de produto bem diferentes: itens de
+marca com 1 vendedor só (concentração máxima, 1.0) e itens genéricos
+com 70-100 vendedores distintos (concentração baixa, ~0.01) -- a
+média de 0.413 é honesta sobre essa mistura, não sobre um mercado
+uniforme. A faixa de preço do "Pro 4" (R$ 10 a R$ 3.382 dentro do
+MESMO `product_id`) é ruído do catálogo do Mercado Livre -- reportado
+como observado, não suavizado nem descartado. Isso é uma leitura de
+**evidência sobre top N produtos amostrados de uma categoria**, nunca
+"o mercado inteiro" -- a mesma disciplina que a Fase 6 já exigia, agora
+reaplicada a uma amostra de formato diferente.
+
+### Decisões que não eram óbvias
+
+- **Buscar o nome do produto custa uma requisição extra por produto --
+  e foi aceito de propósito.** O objetivo declarado da Concorrência
+  nesse projeto é achar fornecedor; um produto de catálogo sem nome é
+  inútil para isso. O teto de requisições (2 + 2×top_n) já contava com
+  esse custo desde o plano, em vez de descobrir depois que faltava
+  orçamento para uma informação essencial.
+- **Parar de chamar uma fonte que sabidamente retorna 403 em toda
+  chamada não é economia prematura.** `search_products()` continuou
+  sendo chamado pelo orchestrator a cada análise mesmo sabendo do
+  bloqueio, só para alimentar um campo observacional de Demanda que
+  nunca é pontuado (`marketplace_contribution` é permanentemente
+  `None` desde a Fase 5). Parar de chamar não mudou nenhum resultado
+  ao vivo -- só parou de gastar uma requisição garantida para nada.
+- **Um teste que ainda passa pode estar testando a coisa errada.**
+  Vários testes do orchestrator afirmavam "evidência de marketplace é
+  compartilhada entre `run_full_analysis` e `search_marketplace`" no
+  agente (Fase 12B). Depois da Fase 13, essa afirmação deixou de ser
+  verdadeira -- mas a asserção numérica (`== 1` chamada) continuava
+  passando, só que por um motivo trivial e diferente (havia apenas 1
+  chamada no roteiro, não duas sendo deduplicadas). Reescrever o teste
+  para refletir o que de fato está sendo verificado foi tão necessário
+  quanto corrigir o código em si.
+- **Preservar uma função não obriga a preservar quem a chama.** "A
+  busca antiga fica no código, não é apagada" (decisão explícita desta
+  fase) significa que `mercadolivre.py`/`search_products()` e seus
+  testes continuam intactos. Não significa que todo chamador dela
+  precisa continuar chamando-a -- o orchestrator parou; a ferramenta
+  `search_marketplace` do agente (Fase 12B), que é uma capacidade de
+  pesquisa independente da pontuação de Concorrência, continuou.
+- **Uma fórmula certa matematicamente pode medir a coisa errada.**
+  `100 * (1 - razão)` é uma inversão correta; o problema nunca esteve
+  na aritmética, esteve em alimentá-la com uma razão que, nessa forma
+  de amostra, não varia com o que deveria medir. Teste de unidade
+  nenhum pega isso sozinho -- ele confirma que a fórmula faz o que o
+  código diz que faz, não que o código mede o que o nome promete.
+- **Ferramenta de edição pode salvar quebra de linha diferente da do
+  repositório sem avisar.** Vários arquivos desta sessão foram salvos
+  em CRLF enquanto o repositório usa LF -- invisível em `git diff`
+  nesta máquina (o `core.autocrlf=true` local escondia a diferença),
+  mas um `git diff --stat` sem essa configuração mostraria a mudança
+  inteira como alterada. `.gitattributes` com `eol=lf` resolve na raiz,
+  em vez de depender da configuração local de quem está editando.

@@ -40,6 +40,7 @@ from src.agent.tools import (
 from tests.conftest_agent import (
     ExplodingLLM,
     ScriptedLLM,
+    make_catalog_sampler,
     make_marketplace_searcher,
     make_trend_fetcher,
 )
@@ -49,12 +50,14 @@ def context(**kwargs):
     kwargs.setdefault("product_name", "Fone")
     kwargs.setdefault("trend_fetcher", make_trend_fetcher())
     kwargs.setdefault("marketplace_searcher", make_marketplace_searcher())
+    kwargs.setdefault("catalog_sampler", make_catalog_sampler())
     return ToolContext(cache=EvidenceCache(), **kwargs)
 
 
 def run(turns, **kwargs):
     kwargs.setdefault("trend_fetcher", make_trend_fetcher())
     kwargs.setdefault("marketplace_searcher", make_marketplace_searcher())
+    kwargs.setdefault("catalog_sampler", make_catalog_sampler())
     request = kwargs.pop("request", None) or AgentRequest(
         product_name="Fone", query="fone bluetooth")
     return run_agent(request, llm_client=ScriptedLLM(turns), **kwargs)
@@ -484,18 +487,18 @@ def test_the_agent_result_score_is_the_engine_score():
     from src.orchestrator import OrchestrationRequest, run_opportunity_analysis
 
     trend = make_trend_fetcher()
-    market = make_marketplace_searcher()
+    catalog = make_catalog_sampler()
 
     direct = run_opportunity_analysis(
         OrchestrationRequest(product_name="Fone", query="fone bluetooth"),
-        trend_fetcher=trend, marketplace_searcher=market)
+        trend_fetcher=trend, catalog_sampler=catalog)
 
     agent = run([
         {"text": "x", "tool_calls": [
             {"id": "1", "name": TOOL_RUN_FULL_ANALYSIS,
              "arguments": {"query": "fone bluetooth"}}]},
         {"text": "No recommendation.", "tool_calls": []},
-    ], trend_fetcher=trend, marketplace_searcher=market)
+    ], trend_fetcher=trend, catalog_sampler=catalog)
 
     assert agent.analysis.opportunity_score == (
         direct.opportunity.opportunity_score)
@@ -649,7 +652,7 @@ UNSUPPORTED_CLAIMS = [
     "Opportunity Score: 100 -- a strong opportunity.",
     "This product scores 100 of 100 and will sell.",
     "Margin is 10% per unit.",
-    "Expected conversion rate: 5%.",
+    "Expected conversion rate: 4%.",
     "Unit cost is 8 reais, sale price 10 reais.",
     "Probability of success: 9 out of 10.",
     "Validated sales: 10 per day.",
@@ -671,7 +674,7 @@ def _real_analysis():
     return run_opportunity_analysis(
         OrchestrationRequest(product_name="Fone", query="fone bluetooth"),
         trend_fetcher=make_trend_fetcher(),
-        marketplace_searcher=make_marketplace_searcher()).opportunity
+        catalog_sampler=make_catalog_sampler()).opportunity
 
 
 @pytest.mark.parametrize("prose", UNSUPPORTED_CLAIMS)
@@ -683,7 +686,7 @@ def test_small_integers_cannot_carry_an_unsupported_claim(prose):
 LEGITIMATE_REPORTING = [
     "Risk is unavailable, so no risk score is issued.",
     "Missing commercial evidence: competition, margin, risk.",
-    "Fone scores 67.57 of 100 under integrated-v1.",
+    "Fone scores 62.87 of 100 under integrated-v1.",
     "Readiness is INCOMPLETE_EVIDENCE and no classification is issued.",
 ]
 

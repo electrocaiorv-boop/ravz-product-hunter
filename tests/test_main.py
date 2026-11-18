@@ -1026,11 +1026,11 @@ def test_run_orchestrated_analysis_reports_provider_failures_honestly(
     def dead_trends(query, geo="BR", timeframe="today 12-m"):
         raise ApifyTrendsConfigurationError("APIFY_API_TOKEN is not configured")
 
-    def dead_marketplace(query, limit=10):
+    def dead_catalog(query, top_n=5):
         raise MercadoLivreResponseError(403, "forbidden")
 
     monkeypatch.setattr("src.orchestrator.fetch_trend_data", dead_trends)
-    monkeypatch.setattr("src.orchestrator.search_products", dead_marketplace)
+    monkeypatch.setattr("src.orchestrator.sample_category_competition", dead_catalog)
 
     run_orchestrated_analysis(make_input(["Fone Bluetooth", "fone bluetooth"]))
 
@@ -1060,7 +1060,7 @@ def test_run_orchestrated_analysis_never_prompts_for_manual_domains(
         "src.orchestrator.fetch_trend_data",
         lambda *a, **k: (_ for _ in ()).throw(ApifyTrendsTimeoutError("t")))
     monkeypatch.setattr(
-        "src.orchestrator.search_products",
+        "src.orchestrator.sample_category_competition",
         lambda *a, **k: (_ for _ in ()).throw(MercadoLivreTimeoutError("t")))
 
     run_orchestrated_analysis(make_input(["Produto", "consulta"]))
@@ -1079,7 +1079,7 @@ def test_orchestration_banner_does_not_overclaim_automation(monkeypatch, capsys)
         "src.orchestrator.fetch_trend_data",
         lambda *a, **k: (_ for _ in ()).throw(ApifyTrendsTimeoutError("t")))
     monkeypatch.setattr(
-        "src.orchestrator.search_products",
+        "src.orchestrator.sample_category_competition",
         lambda *a, **k: (_ for _ in ()).throw(MercadoLivreTimeoutError("t")))
 
     run_orchestrated_analysis(make_input(["P", "q"]))

@@ -249,3 +249,137 @@ def test_result_does_not_expose_market_wide_fields():
 
     forbidden = {"market_share", "total_sellers", "marketplace_dominance", "total_competitors"}
     assert not (forbidden & set(vars(result).keys()))
+
+
+# --- Fase 13: category-catalog sample_adequacy branch -----------------------
+
+
+def test_sample_adequacy_uses_products_sampled_over_top_n_when_present():
+    """When signals came from the category-catalog builder
+    (products_sampled is not None), sample_adequacy must use
+    products_sampled/requested_top_n, NOT marketplace_sample_size/requested_limit.
+    marketplace_sample_size is set here to a deliberately misleading value
+    (50 offers, way over requested_limit=10) to prove the old path is not
+    the one being used.
+    """
+    signals = make_signals(
+        marketplace_sample_size=50,
+        products_sampled=2,
+        unique_seller_ratio=0.5,
+        source_coverage=1.0,
+    )
+    result = analyze_competition(signals, requested_limit=10, requested_top_n=5)
+    # completeness: seller + price(None here) + duplicate(None) + shipping(None)
+    # -> only seller_c present = 1/5 groups = 20%; sample_adequacy = 2/5 = 40%
+    # confidence = min(0.6*20 + 0.4*40, 55) = min(28, 55) = 28
+    assert result.confidence_score == pytest.approx(28.0)
+
+
+def test_sample_adequacy_full_products_sampled_caps_at_full_adequacy():
+    signals = make_signals(
+        marketplace_sample_size=3,  # would read as low adequacy on the OLD path
+        products_sampled=5,
+        unique_seller_ratio=0.5,
+        price_dispersion=0.1,
+        free_shipping_ratio=0.5,
+        source_coverage=1.0,
+    )
+    result = analyze_competition(signals, requested_limit=10, requested_top_n=5)
+    # completeness: seller + price + shipping present, duplicate+saturation
+    # permanently absent -> 3/5 = 60%; sample_adequacy = 5/5 = 100%
+    # confidence = min(0.6*60 + 0.4*100, 55) = min(76, 55) = 55 (anchor cap)
+    assert result.confidence_score == pytest.approx(55.0)
+
+
+def test_sample_adequacy_falls_back_to_marketplace_sample_size_when_products_sampled_is_none():
+    """The flat-sample path (products_sampled is None) is untouched."""
+    signals = make_signals(
+        marketplace_sample_size=10,
+        unique_seller_ratio=0.5,
+        source_coverage=1.0,
+    )
+    result = analyze_competition(signals, requested_limit=10, requested_top_n=5)
+    # Same as before this change: sample_adequacy = min(10,10)/10 = 100%
+    # completeness: only seller present = 1/5 = 20%
+    # confidence = min(0.6*20 + 0.4*100, 55) = min(52, 55) = 52
+    assert result.confidence_score == pytest.approx(52.0)
+
+
+def test_duplicate_listing_pressure_excluded_renormalizes_like_listing_saturation():
+    """A category-catalog signals object (duplicate_title_ratio permanently
+    None) must score identically to a flat-sample signals object with the
+    same other components and duplicate_title_ratio explicitly None --
+    the weighted average renormalizes over available components either way.
+    """
+    common = dict(
+        unique_seller_ratio=0.4,
+        price_dispersion=0.1,
+        free_shipping_ratio=0.6,
+        duplicate_title_ratio=None,
+        source_coverage=1.0,
+    )
+    flat_signals = make_signals(marketplace_sample_size=10, **common)
+    catalog_signals = make_signals(marketplace_sample_size=10, products_sampled=5, **common)
+
+    flat_result = analyze_competition(flat_signals, requested_limit=10)
+    catalog_result = analyze_competition(catalog_signals, requested_limit=10, requested_top_n=5)
+
+    assert flat_result.competition_score == pytest.approx(catalog_result.competition_score)
+    assert catalog_result.duplicate_listing_contribution is None
+
+
+def test_observed_exposes_category_catalog_provenance():
+    signals = make_signals(
+        marketplace_sample_size=5,
+        category_id="MLB196208",
+        category_name="Fones de Ouvido",
+        products_sampled=2,
+        product_names=["Produto A", "Produto B"],
+        source_coverage=1.0,
+    )
+    result = analyze_competition(signals)
+    assert result.observed["category_id"] == "MLB196208"
+    assert result.observed["category_name"] == "Fones de Ouvido"
+    assert result.observed["products_sampled"] == 2
+    assert result.observed["product_names"] == ["Produto A", "Produto B"]
+
+
+# --- Fase 13 fix: seller_concentration_index (not unique_seller_ratio) ----
+
+
+def test_seller_concentration_prefers_the_index_when_present():
+    """Regression for the live bug found 2026-11-17: a single-seller
+    product must score as MAXIMALLY concentrated (near 100), not as
+    "no concentration". `seller_concentration_index` is already in
+    "harder when high" units -- no (1 - x) inversion here.
+    """
+    signals = make_signals(
+        marketplace_sample_size=1,
+        seller_concentration_index=1.0,  # one seller per sampled product
+        unique_seller_ratio=0.0,  # deliberately contradictory decoy
+        source_coverage=1.0,
+    )
+    result = analyze_competition(signals)
+    assert result.seller_concentration_contribution == pytest.approx(100.0)
+
+
+def test_seller_concentration_falls_back_to_unique_seller_ratio_when_index_absent():
+    """The flat-sample path (seller_concentration_index is None) is untouched."""
+    signals = make_signals(
+        marketplace_sample_size=10,
+        unique_seller_ratio=0.2,
+        source_coverage=1.0,
+    )
+    result = analyze_competition(signals)
+    assert result.seller_concentration_contribution == pytest.approx(80.0)
+
+
+def test_observed_exposes_product_table():
+    rows = [object(), object()]
+    signals = make_signals(
+        marketplace_sample_size=3,
+        product_table=rows,
+        source_coverage=1.0,
+    )
+    result = analyze_competition(signals)
+    assert result.observed["product_table"] is rows

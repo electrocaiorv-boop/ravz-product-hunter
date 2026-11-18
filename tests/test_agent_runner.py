@@ -29,6 +29,7 @@ from src.agent.tools import (
 )
 from tests.conftest_agent import (
     ScriptedLLM,
+    make_catalog_sampler,
     make_marketplace_searcher,
     make_trend_fetcher,
 )
@@ -41,6 +42,7 @@ def call(name, **arguments):
 def run(turns, request=None, **kwargs):
     kwargs.setdefault("trend_fetcher", make_trend_fetcher())
     kwargs.setdefault("marketplace_searcher", make_marketplace_searcher())
+    kwargs.setdefault("catalog_sampler", make_catalog_sampler())
     return run_agent(
         request or AgentRequest(product_name="Fone", query="fone bluetooth"),
         llm_client=ScriptedLLM(turns), **kwargs)
@@ -287,7 +289,7 @@ def test_different_arguments_are_fetched_separately():
 
 
 def test_a_repeated_full_analysis_reuses_the_whole_pipeline():
-    trend_seen, market_seen = [], []
+    trend_seen, catalog_seen = [], []
     result = run([
         {"text": "a", "tool_calls": [
             call(TOOL_RUN_FULL_ANALYSIS, query="fone bluetooth")]},
@@ -295,10 +297,16 @@ def test_a_repeated_full_analysis_reuses_the_whole_pipeline():
             call(TOOL_RUN_FULL_ANALYSIS, query="fone bluetooth")]},
         {"text": "c", "tool_calls": []},
     ], trend_fetcher=make_trend_fetcher(counter=trend_seen),
-       marketplace_searcher=make_marketplace_searcher(counter=market_seen))
+       catalog_sampler=make_catalog_sampler(counter=catalog_seen))
 
     assert len(trend_seen) == 1
-    assert len(market_seen) == 1
+    # Fase 13: run_full_analysis's own analysis-level cache (keyed on
+    # query/geo/timeframe) is what prevents the second call from
+    # re-running the pipeline -- catalog_sampler isn't memoized on its
+    # own (see ToolContext.catalog_sampler's docstring), so this asserts
+    # the SAME thing `trend_seen` does: the cached run short-circuits
+    # before either provider is consulted again.
+    assert len(catalog_seen) == 1
     assert result.accepted_tool_calls[1].reused_evidence is True
 
 
@@ -376,13 +384,13 @@ def test_a_failed_provider_becomes_explicit_unavailable_evidence():
 
 def test_identical_inputs_and_script_produce_identical_output():
     trend = make_trend_fetcher()
-    market = make_marketplace_searcher()
+    catalog = make_catalog_sampler()
     request = AgentRequest(product_name="Fone", query="fone bluetooth")
 
     first = run_agent(request, llm_client=ScriptedLLM(FULL_RUN),
-                      trend_fetcher=trend, marketplace_searcher=market)
+                      trend_fetcher=trend, catalog_sampler=catalog)
     second = run_agent(request, llm_client=ScriptedLLM(FULL_RUN),
-                       trend_fetcher=trend, marketplace_searcher=market)
+                       trend_fetcher=trend, catalog_sampler=catalog)
 
     assert first.analysis.opportunity_score == second.analysis.opportunity_score
     assert first.explanation == second.explanation
@@ -490,58 +498,64 @@ def test_estimated_cost_is_never_presented_as_billed():
 
 
 def test_evidence_is_shared_between_the_full_pipeline_and_single_tools():
-    """One provider call per distinct request, whichever tool asks.
+    """One trend provider call per distinct request, whichever tool asks.
 
     The caches used to be per-tool and independent, so evidence fetched
     inside `run_full_analysis` was invisible to `fetch_trend_evidence`
-    and vice versa. Measured before the fix: these four tool calls
-    produced TWO trend fetches and TWO marketplace fetches of identical
-    evidence -- double cost, double rate-limit exposure, and two samples
-    of one market where Phase 12A requires one.
+    and vice versa. Measured before the fix: four tool calls like these
+    produced TWO trend fetches of identical evidence -- double cost,
+    double rate-limit exposure, and two samples of one market where
+    Phase 12A requires one.
+
+    Fase 13: `search_marketplace` is no longer part of this story.
+    `run_full_analysis` sources Competition from its own
+    `catalog_sampler` now, not from `marketplace_searcher` -- so there
+    is nothing left to share between it and `search_marketplace`. That
+    tool's own single-fetch rule (repeating the SAME tool call is
+    memoized) is covered separately below.
     """
-    trend_hits, market_hits = [], []
+    trend_hits = []
     result = run([
         {"text": "a", "tool_calls": [
             call(TOOL_RUN_FULL_ANALYSIS, query="fone bluetooth")]},
         {"text": "b", "tool_calls": [
             call(TOOL_FETCH_TREND, query="fone bluetooth"),
-            call(TOOL_SEARCH_MARKETPLACE, query="fone bluetooth"),
         ]},
         {"text": "c", "tool_calls": [
             call(TOOL_RUN_FULL_ANALYSIS, query="fone bluetooth")]},
         {"text": "d", "tool_calls": []},
-    ], trend_fetcher=make_trend_fetcher(counter=trend_hits),
-       marketplace_searcher=make_marketplace_searcher(counter=market_hits))
+    ], trend_fetcher=make_trend_fetcher(counter=trend_hits))
 
     assert len(trend_hits) == 1, trend_hits
-    assert len(market_hits) == 1, market_hits
     assert result.produced_analysis
 
 
-def test_the_orchestrators_own_fetches_go_through_the_shared_memo():
+def test_the_orchestrators_own_trend_fetch_goes_through_the_shared_memo():
     """Order must not matter: single tool first, then the pipeline."""
-    trend_hits, market_hits = [], []
+    trend_hits = []
     run([
         {"text": "a", "tool_calls": [
             call(TOOL_FETCH_TREND, query="fone bluetooth"),
-            call(TOOL_SEARCH_MARKETPLACE, query="fone bluetooth"),
         ]},
         {"text": "b", "tool_calls": [
             call(TOOL_RUN_FULL_ANALYSIS, query="fone bluetooth")]},
         {"text": "c", "tool_calls": []},
-    ], trend_fetcher=make_trend_fetcher(counter=trend_hits),
-       marketplace_searcher=make_marketplace_searcher(counter=market_hits))
+    ], trend_fetcher=make_trend_fetcher(counter=trend_hits))
 
     assert len(trend_hits) == 1, trend_hits
-    assert len(market_hits) == 1, market_hits
 
 
-def test_a_provider_failure_is_not_retried_within_one_run():
+def test_search_marketplace_memoizes_a_failure_within_one_run():
     """Memoizing the failure prevents a retry yielding partial data.
 
     CLAUDE.md forbids a silent retry that turns a hard failure into
-    partial evidence. The memo stores the failure, so a second ask gets
-    the same explicit failure rather than a fresh attempt.
+    partial evidence. The memo stores the failure, so a second,
+    identical `search_marketplace` call gets the same explicit failure
+    rather than a fresh attempt.
+
+    Fase 13: this no longer involves `run_full_analysis` (it never used
+    `marketplace_searcher` to begin with, after this run) -- repeating
+    the SAME tool call is what is under test.
     """
     from src.integrations.mercadolivre import MercadoLivreTimeoutError
 
@@ -556,7 +570,7 @@ def test_a_provider_failure_is_not_retried_within_one_run():
             call(TOOL_SEARCH_MARKETPLACE, query="fone"),
         ]},
         {"text": "b", "tool_calls": [
-            call(TOOL_RUN_FULL_ANALYSIS, query="fone"),
+            call(TOOL_SEARCH_MARKETPLACE, query="fone"),
         ]},
         {"text": "c", "tool_calls": []},
     ], marketplace_searcher=flaky)
